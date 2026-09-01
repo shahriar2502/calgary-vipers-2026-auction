@@ -91,3 +91,17 @@ def test_invalid_captain_is_rejected() -> None:
 def test_player_round_trip_serialization() -> None:
     player = load_players()[10]
     assert Player.from_dict(player.to_dict()) == player
+
+
+def test_non_captain_cannot_have_pre_assigned_status() -> None:
+    with pytest.raises(ValueError, match="Only captains may have PRE_ASSIGNED status"):
+        Player(
+            id=99,
+            full_name="Invalid Non-Captain",
+            short_name="Invalid",
+            position=Position.MID,
+            overall_rating=80,
+            is_captain=False,
+            auction_eligible=True,
+            auction_status=PlayerAuctionStatus.PRE_ASSIGNED,
+        )

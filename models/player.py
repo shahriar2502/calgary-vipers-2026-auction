@@ -62,8 +62,11 @@ class Player:
                 raise ValueError("Captains must have PRE_ASSIGNED status")
             if any(value is not None for value in (self.base_price, self.sold_price, self.sold_to, self.auction_sequence)):
                 raise ValueError("Captains cannot contain auction result data")
-        elif not self.auction_eligible and self.auction_status == PlayerAuctionStatus.AVAILABLE:
-            raise ValueError("An ineligible player cannot have AVAILABLE status")
+        else:
+            if self.auction_status == PlayerAuctionStatus.PRE_ASSIGNED:
+                raise ValueError("Only captains may have PRE_ASSIGNED status")
+            if not self.auction_eligible and self.auction_status == PlayerAuctionStatus.AVAILABLE:
+                raise ValueError("An ineligible player cannot have AVAILABLE status")
 
         if self.auction_status == PlayerAuctionStatus.SOLD:
             if not self.sold_to or self.sold_price is None:
