@@ -6,7 +6,7 @@ Calgary Vipers is the application and tournament branding identity. It is not an
 
 ## Current state
 
-Milestone 1 is complete: repository structure, configurable tournament data, core domain models, and model tests. No GUI or auction workflow service has been implemented yet.
+Milestone 1 (repository structure, configurable tournament data, core domain models, and model tests) and Milestone 2 (verified/finalized 32-player database and four-team initialization) are complete. No GUI or auction workflow service has been implemented yet.
 
 ## Tournament snapshot
 

@@ -22,6 +22,18 @@ def test_initial_team_configuration() -> None:
     assert all(team.roster_size == 1 for team in teams)
     assert all(team.roster == [team.captain_player_id] for team in teams)
     assert all(team.max_squad_size == 8 for team in teams)
+    assert all(team.auction_spending == 0 for team in teams)
+    assert all(team.players_purchased == 0 for team in teams)
+
+
+def test_team_names_are_the_four_official_tournament_teams() -> None:
+    teams = load_teams()
+    assert [team.name for team in teams] == [
+        "Blackout FC",
+        "Darkstar FC",
+        "Goli Underdogs",
+        "Showstoppers",
+    ]
 
 
 def test_purchase_updates_budget_roster_and_totals() -> None:

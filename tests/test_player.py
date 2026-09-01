@@ -93,6 +93,20 @@ def test_player_round_trip_serialization() -> None:
     assert Player.from_dict(player.to_dict()) == player
 
 
+def test_player_ids_are_contiguous_and_names_are_unique() -> None:
+    players = load_players()
+    assert sorted(player.id for player in players) == list(range(1, 33))
+    assert len({player.full_name for player in players}) == 32
+    assert len({player.short_name for player in players}) == 32
+
+
+def test_no_permanent_base_prices_assigned_yet() -> None:
+    players = load_players()
+    assert all(player.base_price is None for player in players)
+    assert all(player.sold_price is None for player in players)
+    assert all(player.auction_status in (PlayerAuctionStatus.PRE_ASSIGNED, PlayerAuctionStatus.AVAILABLE) for player in players)
+
+
 def test_non_captain_cannot_have_pre_assigned_status() -> None:
     with pytest.raises(ValueError, match="Only captains may have PRE_ASSIGNED status"):
         Player(

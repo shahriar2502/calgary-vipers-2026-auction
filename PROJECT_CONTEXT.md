@@ -122,7 +122,7 @@ Canonical records live in `data/players.json`. Alternate historical names must n
 
 ## Current milestone
 
-Milestone 1 — core project foundation.
+Milestone 2 — player database and team initialization, verified and finalized.
 
 ## Completed in Milestone 1
 
@@ -134,6 +134,18 @@ Milestone 1 — core project foundation.
 - Empty initial auction state
 - Core tests for roster counts, captain rules, required positions, rating ranges, budgets, squad limits, duplicate protection, and model serialization
 - README and project context
+- Follow-up hardening: `Player` now rejects `PRE_ASSIGNED` status on any non-captain; added tests cross-checking `settings.json` counts against the canonical player/team data and verifying team-captain links
+
+## Completed in Milestone 2
+
+- Verified all 32 player records in `data/players.json` are final: unique contiguous ids 1–32, unique full and short names, valid positions, no duplicate or missing data
+- Confirmed exactly 4 captains pre-assigned with `auction_eligible = false` and status `PRE_ASSIGNED`: Samin Haque → Blackout FC, Sabit Khan → Darkstar FC, Arafatul Mamur → Goli Underdogs, Riyad Zaman → Showstoppers
+- Confirmed exactly 28 auction-eligible players
+- Confirmed all four teams initialize with a 100M budget, their captain already in a 1-player roster, and zero auction spending/purchases
+- Confirmed required positions (Nabil/Masrur/Rayhan/Jawad = GK, Mirza = MID, Munem/Sarim = ATT) and current ratings (Rizvi 90; Navid/Rahmat 89; Samin 88; Abir/Faiad 87; Mahtab/Minhaz 86; Adeeb/Arik 85; everyone else 75–84)
+- Confirmed no player carries a permanent `base_price`, `sold_price`, or auction result yet
+- Confirmed Calgary Vipers remains branding-only and is not one of the four auction teams
+- No data file changes were required — the Milestone 1 data was already correct; added tests to lock in these guarantees going forward
 
 ## Key implementation decisions
 
@@ -156,4 +168,4 @@ Milestone 1 — core project foundation.
 
 ## Next task (requires approval)
 
-Define Milestone 2 scope before implementation. Do not begin it automatically.
+Define Milestone 3 scope before implementation. Do not begin it automatically.
