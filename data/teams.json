@@ -1,0 +1,6 @@
+[
+  {"id": 1, "name": "Blackout FC", "short_name": "Samin", "captain_player_id": 1, "captain_name": "Samin Haque", "starting_budget": 100, "remaining_budget": 100, "max_squad_size": 8, "roster": [1], "auction_spending": 0, "players_purchased": 0},
+  {"id": 2, "name": "Darkstar FC", "short_name": "Sabit", "captain_player_id": 3, "captain_name": "Sabit Khan", "starting_budget": 100, "remaining_budget": 100, "max_squad_size": 8, "roster": [3], "auction_spending": 0, "players_purchased": 0},
+  {"id": 3, "name": "Goli Underdogs", "short_name": "Arafat", "captain_player_id": 14, "captain_name": "Arafatul Mamur", "starting_budget": 100, "remaining_budget": 100, "max_squad_size": 8, "roster": [14], "auction_spending": 0, "players_purchased": 0},
+  {"id": 4, "name": "Showstoppers", "short_name": "Riyad", "captain_player_id": 22, "captain_name": "Riyad Zaman", "starting_budget": 100, "remaining_budget": 100, "max_squad_size": 8, "roster": [22], "auction_spending": 0, "players_purchased": 0}
+]

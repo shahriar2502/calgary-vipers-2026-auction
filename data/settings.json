@@ -1,0 +1,25 @@
+{
+  "tournament_name": "Calgary Vipers 2026 Players Auction",
+  "branding": {
+    "app_name": "Football Auction Manager",
+    "branding_name": "Calgary Vipers",
+    "header_title": "Calgary Vipers Auction 2026",
+    "logo_path": "assets/branding/calgary_vipers_logo.png",
+    "theme_name": "vipers_dark"
+  },
+  "total_players": 32,
+  "team_count": 4,
+  "captain_count": 4,
+  "auction_player_count": 28,
+  "starting_budget_millions": 100,
+  "max_squad_size": 8,
+  "max_auction_purchases_per_team": 7,
+  "position_colors": {
+    "GK": "purple",
+    "DEF": "blue",
+    "MID": "green",
+    "ATT": "orange"
+  },
+  "bid_increments_millions": [1, 2, 5],
+  "show_upcoming_queue": false
+}

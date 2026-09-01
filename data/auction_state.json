@@ -1,0 +1,9 @@
+{
+  "queue": [],
+  "current_queue_position": 0,
+  "history": [],
+  "status": "NOT_STARTED",
+  "random_seed": null,
+  "current_bid": null,
+  "leading_team_id": null
+}
