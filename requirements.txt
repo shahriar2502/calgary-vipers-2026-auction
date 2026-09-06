@@ -1,3 +1,9 @@
 customtkinter>=5.2,<6.0
 Pillow>=10.0,<13.0
 pytest>=8.0,<10.0
+
+# Captain Phone Bidding — Phase 1 (September 2026): a lightweight local
+# web server so a captain's phone can view the live bid and submit bids.
+fastapi>=0.115,<1.0
+uvicorn>=0.30,<1.0
+httpx>=0.27,<1.0  # test-only: required by FastAPI's TestClient, not the running server

@@ -1,8 +1,10 @@
-"""Application entry point reserved for the GUI milestone."""
+"""Application entry point."""
+
+from ui import run
 
 
 def main() -> None:
-    print("Football Auction Manager: Milestone 1 models are ready. GUI not implemented yet.")
+    run()
 
 
 if __name__ == "__main__":

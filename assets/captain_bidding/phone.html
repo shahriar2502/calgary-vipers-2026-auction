@@ -1,0 +1,381 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+<title>Calgary Vipers — Captain Bidding</title>
+<style>
+  :root {
+    --background: #0d0f12;
+    --surface: #15181d;
+    --surface-alt: #1c2027;
+    --border: #262b33;
+    --text-primary: #f2f4f7;
+    --text-secondary: #9aa4b2;
+    --green: #28c76f;
+    --green-hover: #22a860;
+    --red: #e5484d;
+    --gold: #e3c274;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; background: var(--background); color: var(--text-primary);
+    font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+    -webkit-tap-highlight-color: transparent;
+  }
+  #app { min-height: 100vh; display: flex; flex-direction: column; padding: 16px; }
+  h1 { font-size: 20px; margin: 0 0 4px; letter-spacing: 0.5px; }
+  .subtitle { color: var(--text-secondary); font-size: 13px; margin-bottom: 20px; }
+  .test-mode-banner {
+    background: var(--surface-alt); border: 1px solid var(--gold); color: var(--gold);
+    border-radius: 8px; padding: 8px 12px; font-size: 12px; font-weight: 700;
+    text-align: center; margin-bottom: 16px; letter-spacing: 0.5px;
+  }
+  .mode-badge {
+    display: inline-block; border-radius: 6px; padding: 4px 10px; font-size: 11px;
+    font-weight: 700; letter-spacing: 0.5px; margin-bottom: 12px;
+  }
+  .mode-mock { background: var(--surface-alt); color: var(--text-secondary); }
+  .mode-live { background: var(--red); color: var(--text-primary); }
+  .team-grid { display: grid; grid-template-columns: 1fr; gap: 12px; margin-top: 12px; }
+  .team-button {
+    background: var(--surface); border: 2px solid var(--border); color: var(--text-primary);
+    border-radius: 12px; padding: 22px 16px; font-size: 18px; font-weight: 700;
+    text-align: center; cursor: pointer;
+  }
+  .team-button:active { border-color: var(--green); background: var(--surface-alt); }
+  .card {
+    background: var(--surface); border-radius: 14px; padding: 16px; margin-bottom: 14px;
+    border: 1px solid var(--border);
+  }
+  .player-photo {
+    width: 100%; max-width: 260px; aspect-ratio: 4 / 5; object-fit: cover;
+    border-radius: 12px; border: 3px solid var(--green); display: block; margin: 0 auto 12px;
+    background: var(--surface-alt);
+  }
+  .player-photo-placeholder {
+    width: 100%; max-width: 260px; aspect-ratio: 4 / 5; border-radius: 12px;
+    border: 3px solid var(--green); margin: 0 auto 12px; background: var(--surface-alt);
+    display: flex; align-items: center; justify-content: center; font-size: 48px;
+    font-weight: 700; color: var(--text-secondary);
+  }
+  .player-name { font-size: 22px; font-weight: 700; text-align: center; margin-bottom: 6px; }
+  .badge-row { display: flex; justify-content: center; gap: 10px; align-items: baseline; margin-bottom: 4px; }
+  .position-badge {
+    background: var(--surface-alt); color: var(--text-primary); border-radius: 6px;
+    padding: 3px 10px; font-size: 12px; font-weight: 700;
+  }
+  .ovr-value { color: var(--gold); font-size: 22px; font-weight: 700; }
+  .ovr-label { color: var(--text-secondary); font-size: 11px; font-weight: 700; }
+  .fpl-line { text-align: center; color: var(--gold); font-size: 13px; font-weight: 700; margin-top: 4px; }
+  .bid-row { display: flex; justify-content: space-between; margin: 10px 0; }
+  .bid-label { color: var(--text-secondary); font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; }
+  .bid-value { font-size: 26px; font-weight: 800; }
+  .bid-value.gold { color: var(--gold); }
+  .leading-team { font-size: 16px; font-weight: 700; color: var(--green); text-align: right; }
+  .your-team-name { font-size: 13px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.5px; }
+  .stat-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; margin-top: 8px; }
+  .stat-block { text-align: center; }
+  .stat-value { font-size: 17px; font-weight: 700; }
+  .stat-label { font-size: 10px; color: var(--text-secondary); text-transform: uppercase; margin-top: 2px; }
+  .bid-buttons { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; margin-top: 14px; }
+  .bid-button {
+    background: var(--green); color: var(--background); border: none; border-radius: 10px;
+    padding: 18px 0; font-size: 18px; font-weight: 800; cursor: pointer;
+  }
+  .bid-button:active { background: var(--green-hover); }
+  .bid-button:disabled { background: var(--surface-alt); color: var(--text-secondary); }
+  .reject-message {
+    margin-top: 10px; background: var(--red); color: var(--text-primary); border-radius: 8px;
+    padding: 10px 12px; font-size: 13px; font-weight: 700; text-align: center; display: none;
+  }
+  .status-message { text-align: center; font-size: 16px; font-weight: 700; margin-top: 40px; }
+  .status-sub { text-align: center; color: var(--text-secondary); font-size: 13px; margin-top: 8px; }
+  .change-team-link {
+    text-align: center; margin-top: 18px; color: var(--text-secondary); font-size: 12px;
+    text-decoration: underline; cursor: pointer;
+  }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<div id="app">
+  <h1>CALGARY VIPERS</h1>
+  <div class="subtitle">CAPTAIN BIDDING</div>
+
+  <div id="team-select-screen">
+    <div class="test-mode-banner">TEST MODE — NO TEAM AUTHENTICATION</div>
+    <div id="mode-badge-select"></div>
+    <div style="font-weight:700; margin: 8px 0 4px;">SELECT YOUR TEAM</div>
+    <div class="team-grid" id="team-grid"></div>
+  </div>
+
+  <div id="bidding-screen" hidden>
+    <div id="mode-badge-bid"></div>
+    <div class="your-team-name" id="your-team-name"></div>
+    <span class="change-team-link" id="change-team-link">Change team</span>
+
+    <div id="status-screen" hidden>
+      <div class="status-message" id="status-message"></div>
+      <div class="status-sub" id="status-sub"></div>
+    </div>
+
+    <div id="bidding-content" hidden>
+      <div class="card">
+        <img class="player-photo" id="player-photo" hidden />
+        <div class="player-photo-placeholder" id="player-photo-placeholder" hidden></div>
+        <div class="player-name" id="player-name"></div>
+        <div class="badge-row">
+          <span class="position-badge" id="player-position"></span>
+          <span><span class="ovr-value" id="player-ovr"></span> <span class="ovr-label">OVR</span></span>
+        </div>
+        <div class="fpl-line" id="player-fpl"></div>
+      </div>
+
+      <div class="card">
+        <div class="bid-row">
+          <div>
+            <div class="bid-label">Current Highest Bid</div>
+            <div class="bid-value gold" id="current-bid">—</div>
+          </div>
+          <div>
+            <div class="bid-label">Leading Team</div>
+            <div class="leading-team" id="leading-team">—</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="bid-label">YOUR TEAM</div>
+        <div class="stat-grid">
+          <div class="stat-block"><div class="stat-value" id="your-budget"></div><div class="stat-label">Budget</div></div>
+          <div class="stat-block"><div class="stat-value" id="your-squad"></div><div class="stat-label">Squad</div></div>
+          <div class="stat-block"><div class="stat-value" id="your-max-bid"></div><div class="stat-label">Max Legal Bid</div></div>
+        </div>
+        <div class="bid-buttons">
+          <button class="bid-button" data-increment="1">+1M</button>
+          <button class="bid-button" data-increment="2">+2M</button>
+          <button class="bid-button" data-increment="5">+5M</button>
+        </div>
+        <div class="reject-message" id="reject-message"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  const TEAM_NAMES_IN_ORDER = ["Blackout FC", "Darkstar FC", "Goli Underdogs", "Showstoppers"];
+  const POLL_INTERVAL_MS = 750;
+
+  function getClientId() {
+    let id = localStorage.getItem("captain_bidding_client_id");
+    if (!id) {
+      id = "phone-" + Math.random().toString(36).slice(2) + Date.now().toString(36);
+      localStorage.setItem("captain_bidding_client_id", id);
+    }
+    return id;
+  }
+
+  function getSavedTeamId() {
+    const raw = localStorage.getItem("captain_bidding_team_id");
+    return raw ? parseInt(raw, 10) : null;
+  }
+
+  function saveTeamId(teamId) {
+    localStorage.setItem("captain_bidding_team_id", String(teamId));
+  }
+
+  function clearSavedTeamId() {
+    localStorage.removeItem("captain_bidding_team_id");
+  }
+
+  const clientId = getClientId();
+  let selectedTeamId = getSavedTeamId();
+
+  const teamSelectScreen = document.getElementById("team-select-screen");
+  const biddingScreen = document.getElementById("bidding-screen");
+  const teamGrid = document.getElementById("team-grid");
+  const yourTeamName = document.getElementById("your-team-name");
+  const changeTeamLink = document.getElementById("change-team-link");
+  const statusScreen = document.getElementById("status-screen");
+  const statusMessage = document.getElementById("status-message");
+  const statusSub = document.getElementById("status-sub");
+  const biddingContent = document.getElementById("bidding-content");
+  const rejectMessage = document.getElementById("reject-message");
+
+  function modeBadgeHtml(mode) {
+    if (mode === "LIVE") return '<span class="mode-badge mode-live">LIVE AUCTION</span>';
+    if (mode === "MOCK") return '<span class="mode-badge mode-mock">MOCK AUCTION</span>';
+    return "";
+  }
+
+  function renderTeamButtons(state) {
+    teamGrid.innerHTML = "";
+    const teams = (state && state.teams) || [];
+    teams.forEach(function (team) {
+      const button = document.createElement("button");
+      button.className = "team-button";
+      button.textContent = team.name;
+      button.onclick = function () {
+        selectedTeamId = team.id;
+        saveTeamId(team.id);
+        showBiddingScreen();
+      };
+      teamGrid.appendChild(button);
+    });
+    if (teams.length === 0) {
+      teamGrid.innerHTML = TEAM_NAMES_IN_ORDER.map(function (name) {
+        return '<div class="team-button" style="opacity:0.5;">' + name + "</div>";
+      }).join("");
+    }
+  }
+
+  function showTeamSelectScreen() {
+    clearSavedTeamId();
+    selectedTeamId = null;
+    teamSelectScreen.hidden = false;
+    biddingScreen.hidden = true;
+  }
+
+  function showBiddingScreen() {
+    teamSelectScreen.hidden = true;
+    biddingScreen.hidden = false;
+  }
+
+  changeTeamLink.onclick = showTeamSelectScreen;
+
+  function showStatus(message, sub) {
+    statusScreen.hidden = false;
+    biddingContent.hidden = true;
+    statusMessage.textContent = message;
+    statusSub.textContent = sub || "";
+  }
+
+  function renderBiddingState(state) {
+    document.getElementById("mode-badge-bid").innerHTML = modeBadgeHtml(state.session_mode);
+
+    const selectedTeam = state.selected_team;
+    yourTeamName.textContent = selectedTeam ? selectedTeam.name : "";
+
+    if (state.auction_status === "BLOCKED") {
+      showStatus("AUCTION BLOCKED", "Bidding unavailable.");
+      return;
+    }
+    if (state.auction_status === "COMPLETE") {
+      showStatus("AUCTION COMPLETE", "Bidding closed.");
+      return;
+    }
+    if (!state.current_player) {
+      showStatus("WAITING FOR NEXT PLAYER", "");
+      return;
+    }
+
+    statusScreen.hidden = true;
+    biddingContent.hidden = false;
+
+    const player = state.current_player;
+    const photoImg = document.getElementById("player-photo");
+    const photoPlaceholder = document.getElementById("player-photo-placeholder");
+    if (player.photo_url) {
+      photoImg.src = player.photo_url;
+      photoImg.hidden = false;
+      photoPlaceholder.hidden = true;
+    } else {
+      photoImg.hidden = true;
+      photoPlaceholder.hidden = false;
+      photoPlaceholder.textContent = player.full_name.slice(0, 2).toUpperCase();
+    }
+    document.getElementById("player-name").textContent = player.full_name.toUpperCase();
+    document.getElementById("player-position").textContent = player.position;
+    document.getElementById("player-ovr").textContent = player.overall_rating;
+    document.getElementById("player-fpl").textContent = "FPL " + player.fpl_display;
+
+    document.getElementById("current-bid").textContent = state.current_bid != null ? state.current_bid + "M" : "—";
+    document.getElementById("leading-team").textContent = state.leading_team_name || "—";
+
+    if (selectedTeam) {
+      document.getElementById("your-budget").textContent = selectedTeam.remaining_budget + "M";
+      document.getElementById("your-squad").textContent = selectedTeam.roster_size + "/" + selectedTeam.max_squad_size;
+      document.getElementById("your-max-bid").textContent = selectedTeam.maximum_legal_bid + "M";
+    }
+
+    const disableBidding = !state.bidding_enabled;
+    document.querySelectorAll(".bid-button").forEach(function (button) {
+      button.disabled = disableBidding;
+    });
+  }
+
+  function fetchState() {
+    const params = new URLSearchParams();
+    if (selectedTeamId != null) params.set("team_id", selectedTeamId);
+    params.set("client_id", clientId);
+    fetch("/api/state?" + params.toString())
+      .then(function (response) { return response.json(); })
+      .then(function (state) {
+        if (state.no_active_session) {
+          teamSelectScreen.hidden = true;
+          biddingScreen.hidden = false;
+          document.getElementById("mode-badge-bid").innerHTML = "";
+          showStatus("NO ACTIVE AUCTION", "Waiting for organizer to start or resume a session.");
+          return;
+        }
+        if (selectedTeamId == null) {
+          document.getElementById("mode-badge-select").innerHTML = modeBadgeHtml(state.session_mode);
+          renderTeamButtons(state);
+          showTeamSelectScreenIfNeeded();
+        } else {
+          showBiddingScreen();
+          renderBiddingState(state);
+        }
+      })
+      .catch(function () { /* transient network hiccup — next poll will retry */ });
+  }
+
+  function showTeamSelectScreenIfNeeded() {
+    if (selectedTeamId == null) {
+      teamSelectScreen.hidden = false;
+      biddingScreen.hidden = true;
+    }
+  }
+
+  document.querySelectorAll(".bid-button").forEach(function (button) {
+    button.addEventListener("click", function () {
+      if (selectedTeamId == null) return;
+      const increment = parseInt(button.getAttribute("data-increment"), 10);
+      const currentText = document.getElementById("current-bid").textContent;
+      const currentBid = currentText === "—" ? 0 : parseInt(currentText, 10);
+      const amount = currentBid + increment;
+
+      fetch("/api/bid", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ team_id: selectedTeamId, amount: amount }),
+      })
+        .then(function (response) { return response.json(); })
+        .then(function (result) {
+          if (!result.accepted) {
+            rejectMessage.textContent = result.reason || "Bid rejected.";
+            rejectMessage.style.display = "block";
+            setTimeout(function () { rejectMessage.style.display = "none"; }, 3000);
+          } else {
+            rejectMessage.style.display = "none";
+          }
+          fetchState();
+        })
+        .catch(function () {
+          rejectMessage.textContent = "Network error — bid may not have been received.";
+          rejectMessage.style.display = "block";
+        });
+    });
+  });
+
+  if (selectedTeamId != null) {
+    showBiddingScreen();
+  }
+  fetchState();
+  setInterval(fetchState, POLL_INTERVAL_MS);
+})();
+</script>
+</body>
+</html>

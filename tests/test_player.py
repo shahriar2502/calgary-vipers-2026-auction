@@ -49,9 +49,10 @@ def test_captains_are_preassigned_and_never_auctioned() -> None:
         ("Masrur Rahman", Position.GK),
         ("Rayhan", Position.GK),
         ("Jawad", Position.GK),
-        ("Mirza", Position.MID),
-        ("Munem", Position.ATT),
-        ("Sarim", Position.ATT),
+        ("Munem", Position.MID),
+        ("Hasnan Siddique Sunve", Position.DEF),
+        ("Farhan Mahin", Position.ATT),
+        ("Tahsin Islam", Position.ATT),
     ],
 )
 def test_required_positions(name: str, position: Position) -> None:
@@ -63,9 +64,9 @@ def test_rating_rules() -> None:
     players = load_players()
     by_name = {player.full_name: player for player in players}
     top_names = {
-        "Rizvi Ibrahim", "Navid Rahman", "Rahmat Ullah", "Samin Haque",
-        "Fairooz Abir", "Faiad Rehman", "Hasan Mahtab", "Minhaz Hamim",
-        "Adeeb Ahmed", "Shahriar Anwar Khan",
+        "Rizvi Ibrahim", "Navid Rahman", "Munem", "Rahmat Ullah", "Masrur Rahman",
+        "Samin Haque", "Minhaz Hamim", "Jawad", "Tahsin Islam", "Fairooz Abir",
+        "Faiad Rehman", "Hasan Mahtab", "Farhan Labib",
     }
     assert by_name["Rizvi Ibrahim"].overall_rating == 90
     assert max(player.overall_rating for player in players) == 90

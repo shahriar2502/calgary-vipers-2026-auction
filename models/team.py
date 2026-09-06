@@ -5,6 +5,12 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
+# The minimum legal price for any auction purchase (pre-Milestone-9 budget
+# reserve fix — see PROJECT_CONTEXT.md's "PRE-M9 BUDGET RESERVE RULE"). A
+# single source of truth: services/auction_service.py imports this same
+# constant rather than hard-coding "1" a second time.
+MINIMUM_LEGAL_PRICE = 1
+
 
 @dataclass(slots=True)
 class Team:
@@ -50,14 +56,44 @@ class Team:
     def roster_size(self) -> int:
         return len(self.roster)
 
+    @property
+    def remaining_required_purchases(self) -> int:
+        """How many more players this team must still buy to reach a full
+        (`max_squad_size`) roster, including whatever purchase is being
+        considered right now. Zero once the roster is full."""
+        return max(self.max_squad_size - self.roster_size, 0)
+
+    @property
+    def maximum_legal_bid(self) -> int:
+        """The most this team could legally pay for its very next purchase
+        while still able to afford every purchase after that at the
+        minimum legal price (`MINIMUM_LEGAL_PRICE` per slot still needed).
+
+        Tournament rule (pre-Milestone-9 budget reserve fix): a team must
+        never spend so much on one player that filling its remaining
+        roster slots afterward becomes mathematically impossible. See
+        PROJECT_CONTEXT.md's "PRE-M9 BUDGET RESERVE RULE" for the formula
+        and worked examples.
+        """
+        slots_after_this_purchase = max(self.remaining_required_purchases - 1, 0)
+        reserve_after_this_purchase = slots_after_this_purchase * MINIMUM_LEGAL_PRICE
+        return self.remaining_budget - reserve_after_this_purchase
+
     def can_afford(self, price: int) -> bool:
         return price >= 0 and price <= self.remaining_budget
+
+    def can_afford_while_preserving_roster_budget(self, price: int) -> bool:
+        """Whether `price` is both >= the minimum legal price and leaves
+        enough remaining budget to still fill every roster slot needed
+        after this purchase, each at the minimum legal price."""
+        return MINIMUM_LEGAL_PRICE <= price <= self.maximum_legal_bid
 
     def can_buy_player(self, player_id: int, price: int) -> bool:
         return (
             player_id not in self.roster
             and self.roster_size < self.max_squad_size
             and self.can_afford(price)
+            and self.can_afford_while_preserving_roster_budget(price)
         )
 
     def add_purchased_player(self, player_id: int, price: int) -> None:

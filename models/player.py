@@ -28,6 +28,12 @@ class Player:
     short_name: str
     position: Position
     overall_rating: int
+    # Organizer-supplied previous-season FPL total, added September 2026.
+    # None means "no usable last-season result" — never 0, which is a real,
+    # distinct score. A plain additive default field: an older persisted
+    # snapshot's dict simply won't have this key, and `from_dict`'s
+    # `cls(**data)` already falls back to this default with no extra code.
+    last_season_fpl_points: int | None = None
     photo_path: str | None = None
     is_captain: bool = False
     assigned_team: str | None = None
@@ -49,7 +55,11 @@ class Player:
             raise ValueError("Player names cannot be blank")
         if not 0 <= self.overall_rating <= 100:
             raise ValueError("Overall rating must be between 0 and 100")
-        for field_name, value in (("base_price", self.base_price), ("sold_price", self.sold_price)):
+        for field_name, value in (
+            ("base_price", self.base_price),
+            ("sold_price", self.sold_price),
+            ("last_season_fpl_points", self.last_season_fpl_points),
+        ):
             if value is not None and value < 0:
                 raise ValueError(f"{field_name} cannot be negative")
 

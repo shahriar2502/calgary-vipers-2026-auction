@@ -7,5 +7,12 @@ venv/
 .vscode/
 *.log
 
-# Runtime state may contain a live tournament in later milestones.
-data/auction_state.local.json
+# Milestone 9: saved auction sessions (MOCK and LIVE) may contain real
+# tournament data and are never committed. The directory is created
+# automatically on first save (see services/persistence_service.py).
+saves/
+
+# September 2026 (Settings): organizer-local app preferences (fullscreen,
+# confirmation toggles) — machine-specific, never tournament data. Created
+# automatically on first save (see services/preferences_service.py).
+config/
