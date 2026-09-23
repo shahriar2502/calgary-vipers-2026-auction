@@ -26,28 +26,28 @@ EXPECTED_RATINGS = {
     "Ishmam Rahman": 83,
     "Md Rafiu Hossain": 78,
     "Hasan Mahtab": 85,
-    "Minhaz Hamim": 87,
+    "Mirza Mohammed": 87,
     "Nabil Shahriar": 76,
     "Adeeb Ahmed": 84,
     "Masrur Rahman": 88,
     "Arafatul Mamur": 76,
     "Aafeef Kabir": 79,
     "Aiman Nawar Chowdhury": 80,
-    "Sajid Khalid": 75,
+    "Shadman Sakib": 79,
     "Rayhan": 84,
     "Navid Rahman": 89,
     "Rizvi Ibrahim": 90,
     "Fairooz Abir": 86,
     "Riyad Zaman": 82,
     "Faiad Rehman": 85,
-    "Munem": 89,
-    "Azmi": 82,
-    "Mubasshir": 80,
+    "Munem Morshed": 89,
+    "Azmi Hoque": 82,
+    "Mubasshir Rahman": 80,
     "Farhan Labib": 85,
     "Jawad": 87,
     "Taqi Rahman": 75,
     "Hasnan Siddique Sunve": 82,
-    "Farhan Mahin": 78,
+    "Rhishik Roy": 83,
     "Tahsin Islam": 87,
 }
 
@@ -114,14 +114,14 @@ def test_removed_player_is_absent(removed_name: str) -> None:
 
 
 def test_munem_present_exactly_once() -> None:
-    matches = [player for player in _players() if player.full_name == "Munem"]
+    matches = [player for player in _players() if player.full_name == "Munem Morshed"]
     assert len(matches) == 1
 
 
 def test_munem_id_position_and_rating() -> None:
-    munem = _by_name(_players())["Munem"]
+    munem = _by_name(_players())["Munem Morshed"]
     assert munem.id == 24
-    assert munem.position == Position.MID
+    assert munem.position == Position.ATT
     assert munem.overall_rating == 89
 
 
@@ -132,11 +132,11 @@ def test_sunve_id_position_and_rating() -> None:
     assert sunve.overall_rating == 82
 
 
-def test_mahin_id_position_and_rating() -> None:
-    mahin = _by_name(_players())["Farhan Mahin"]
-    assert mahin.id == 31
-    assert mahin.position == Position.ATT
-    assert mahin.overall_rating == 78
+def test_rhishik_id_position_and_rating() -> None:
+    rhishik = _by_name(_players())["Rhishik Roy"]
+    assert rhishik.id == 31
+    assert rhishik.position == Position.DEF
+    assert rhishik.overall_rating == 83
 
 
 def test_tahsin_id_position_and_rating() -> None:
@@ -160,10 +160,10 @@ def test_rizvi_navid_rahmat_masrur_headline_ratings() -> None:
     assert by_name["Masrur Rahman"].overall_rating == 88
 
 
-def test_sajid_khalid_is_midfielder_rated_75() -> None:
-    sajid = _by_name(_players())["Sajid Khalid"]
-    assert sajid.position == Position.MID
-    assert sajid.overall_rating == 75
+def test_shadman_sakib_is_midfielder_rated_79() -> None:
+    shadman = _by_name(_players())["Shadman Sakib"]
+    assert shadman.position == Position.MID
+    assert shadman.overall_rating == 79
 
 
 def test_goalkeeper_positions_and_ratings() -> None:

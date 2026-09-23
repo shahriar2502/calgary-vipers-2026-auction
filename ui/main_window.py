@@ -12,9 +12,11 @@ from pathlib import Path
 import customtkinter as ctk
 
 from services import persistence_service, preferences_service
+from services.app_logging import log_event
 from services.auction_session_service import AuctionSession
 from services.captain_bidding_server import CaptainBiddingServer
-from services.config_service import BrandingConfig, load_branding_config
+from services.config_service import APP_VERSION, BrandingConfig, load_branding_config
+from services.runtime_paths import RESOURCE_ROOT, WRITABLE_ROOT, is_frozen
 from ui import theme
 from ui.screens import SCREEN_BUILDERS
 from ui.widgets import load_image_safely
@@ -27,6 +29,7 @@ NAV_ITEMS: list[tuple[str, str]] = [
     ("Teams", "Team rosters, captains, remaining budgets, and squad sizes will appear here."),
     ("Auction History", "A log of completed SOLD and UNSOLD results will appear here."),
     ("Reports", "Auction summaries and exports will appear here."),
+    ("Match Results", "Post-auction match scores and transfer budgets will appear here."),
     ("Settings", "Tournament and branding configuration will appear here."),
 ]
 DEFAULT_SCREEN = NAV_ITEMS[0][0]
@@ -82,6 +85,11 @@ class MainWindow(ctk.CTk):
     def __init__(self, branding: BrandingConfig | None = None, session: AuctionSession | None = None) -> None:
         super().__init__()
         theme.apply_appearance()
+
+        log_event(
+            f"App startup: version={APP_VERSION} frozen={is_frozen()} "
+            f"resource_root={RESOURCE_ROOT} writable_root={WRITABLE_ROOT}"
+        )
 
         self.branding = branding or load_branding_config()
         self.session = session or AuctionSession()

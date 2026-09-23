@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 from models.auction import AuctionStatus
+from models.player import player_base_price
 from services.auction_service import AuctionTransactionError, team_can_bid_for_player
 from services.auction_session_service import AuctionSession
 
@@ -23,7 +24,10 @@ def pick_eligible_team(player, teams, players):
     return min(eligible, key=lambda team: team.roster_size)
 
 
-def resolve_whole_session(session, sale_price: int = 1) -> None:
+def resolve_whole_session(session) -> None:
+    """Sells every player at its own base price (First Auction Rules V2:
+    GK/non-GK base prices are no longer both satisfied by one flat
+    price)."""
     for _ in range(500):
         if session.auction.status in (AuctionStatus.COMPLETE, AuctionStatus.BLOCKED):
             return
@@ -32,7 +36,7 @@ def resolve_whole_session(session, sale_price: int = 1) -> None:
         if team is None:
             session.mark_current_player_unsold()
         else:
-            session.sell_current_player(winning_team=team.id, sale_price=sale_price)
+            session.sell_current_player(winning_team=team.id, sale_price=player_base_price(current))
     raise AssertionError("resolve_whole_session did not reach COMPLETE/BLOCKED within 500 attempts")
 
 
@@ -255,7 +259,7 @@ def test_transactions_before_start_raise_clear_error() -> None:
 def test_session_reports_complete_after_all_28_resolved() -> None:
     session = AuctionSession()
     session.start(seed=1)  # confirmed to reach a clean COMPLETE with this strategy
-    resolve_whole_session(session, sale_price=1)
+    resolve_whole_session(session)
     assert session.auction.status == AuctionStatus.COMPLETE
     assert session.is_complete is True
     assert session.is_blocked is False

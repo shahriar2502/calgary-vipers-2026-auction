@@ -12,8 +12,8 @@ import copy
 
 import pytest
 
-from models.auction import AuctionStatus
-from models.player import Player, Position
+from models.auction import Auction, AuctionStatus
+from models.player import Player, Position, player_base_price
 from models.team import Team
 from services.auction_service import get_current_player, process_sale, process_unsold, team_can_bid_for_player
 from services.auction_session_service import AuctionSession, SessionMode
@@ -30,12 +30,118 @@ def pick_eligible_team(player: Player, teams: list[Team], players: list[Player])
     return min(eligible, key=lambda team: team.roster_size)
 
 
-def sell_or_unsold(session: AuctionSession, sale_price: int = 1):
+def sell_or_unsold(session: AuctionSession, sale_price: int | None = None):
+    """Sells at `sale_price`, or (First Auction Rules V2: GK/non-GK base
+    prices are no longer both satisfied by one flat fallback) the current
+    player's own base price when not given explicitly."""
     player = session.current_player
     team = pick_eligible_team(player, session.teams, session.players)
     if team is None:
         return session.mark_current_player_unsold()
-    return session.sell_current_player(winning_team=team.id, sale_price=sale_price)
+    price = sale_price if sale_price is not None else player_base_price(player)
+    return session.sell_current_player(winning_team=team.id, sale_price=price)
+
+
+def build_synthetic_blocked_session() -> AuctionSession:
+    """A minimal, deterministic BLOCKED scenario for screen/report tests.
+
+    First Auction Rules V2's "must keep the final roster slot open for a
+    mandatory goalkeeper" rule means real 28-player canonical data can no
+    longer reliably reach BLOCKED (exactly 4 GKs for 4 teams now
+    guarantees eventual completion — verified directly: no seed in a wide
+    search reached BLOCKED under any reasonable team-selection strategy).
+    So instead: three teams are already full (8/8) with their own real
+    GK; the fourth is stuck at 7/8 with no GK; the one player left in the
+    queue is a non-GK, which the mandatory-GK rule makes illegal for
+    every team regardless of budget -> BLOCKED.
+    """
+    from models.auction import AuctionHistoryEntry
+
+    captains = [
+        Player(
+            id=i + 1,
+            full_name=f"Cap{i + 1}",
+            short_name=f"C{i + 1}",
+            position=Position.ATT,
+            overall_rating=80,
+            is_captain=True,
+            assigned_team=f"Team {chr(65 + i)}",
+            auction_eligible=False,
+            auction_status="PRE_ASSIGNED",
+        )
+        for i in range(4)
+    ]
+    teams = [
+        Team(id=i + 1, name=f"Team {chr(65 + i)}", short_name=f"T{i + 1}", captain_player_id=captains[i].id, captain_name=captains[i].full_name)
+        for i in range(4)
+    ]
+
+    auction = Auction(queue=[999], status=AuctionStatus.IN_PROGRESS)
+    all_players = list(captains)
+    sequence = 1
+    for i in range(3):
+        gk = Player(
+            id=100 + i, full_name=f"GK{i}", short_name=f"GK{i}", position=Position.GK, overall_rating=80,
+            auction_status="SOLD", sold_to=teams[i].name, sold_price=4, auction_sequence=sequence,
+        )
+        sequence += 1
+        fillers = []
+        for j in range(6):
+            filler = Player(
+                id=200 + i * 10 + j, full_name=f"F{i}_{j}", short_name=f"F{i}_{j}", position=Position.DEF,
+                overall_rating=80, auction_status="SOLD", sold_to=teams[i].name, sold_price=2, auction_sequence=sequence,
+            )
+            sequence += 1
+            fillers.append(filler)
+        all_players.extend([gk] + fillers)
+        teams[i].roster = [captains[i].id, gk.id] + [f.id for f in fillers]
+        teams[i].auction_spending = 4 + 6 * 2
+        teams[i].remaining_budget = 100 - teams[i].auction_spending
+        teams[i].players_purchased = 7
+        for player in [gk] + fillers:
+            auction.history.append(
+                AuctionHistoryEntry(
+                    auction_sequence=player.auction_sequence, player_id=player.id, player_name=player.full_name,
+                    position=player.position.value, overall_rating=player.overall_rating, base_price=player.sold_price,
+                    status="SOLD", team=player.sold_to, sold_price=player.sold_price, round_number=1,
+                )
+            )
+
+    stuck_fillers = []
+    for j in range(6):
+        filler = Player(
+            id=900 + j, full_name=f"SF{j}", short_name=f"SF{j}", position=Position.DEF, overall_rating=80,
+            auction_status="SOLD", sold_to=teams[3].name, sold_price=2, auction_sequence=sequence,
+        )
+        sequence += 1
+        stuck_fillers.append(filler)
+        auction.history.append(
+            AuctionHistoryEntry(
+                auction_sequence=filler.auction_sequence, player_id=filler.id, player_name=filler.full_name,
+                position=filler.position.value, overall_rating=filler.overall_rating, base_price=filler.sold_price,
+                status="SOLD", team=filler.sold_to, sold_price=filler.sold_price, round_number=1,
+            )
+        )
+    all_players.extend(stuck_fillers)
+    teams[3].roster = [captains[3].id] + [f.id for f in stuck_fillers]
+    teams[3].auction_spending = 6 * 2
+    teams[3].remaining_budget = 100 - teams[3].auction_spending
+    teams[3].players_purchased = 6
+
+    stuck_player = Player(id=999, full_name="Stuck Player", short_name="Stuck", position=Position.DEF, overall_rating=80)
+    all_players.append(stuck_player)
+
+    session = AuctionSession()
+    session.players = all_players
+    session.teams = teams
+    session.auction = auction
+    session.mode = SessionMode.MOCK
+    session.session_id = "synthetic_blocked"
+    session.created_at = "2026-01-01T00:00:00+00:00"
+
+    result = process_unsold(auction, all_players, teams)
+    assert result.auction_status == AuctionStatus.BLOCKED
+    return session
 
 
 def force_one_non_gk_unsold_then_resolve_round_one(session: AuctionSession) -> int:
@@ -205,7 +311,7 @@ def test_multiple_attempts_for_same_player_all_appear(hidden_root, started_sessi
         current = started_session.current_player
         if current.id == forced_id:
             team = pick_eligible_team(current, started_session.teams, started_session.players)
-            started_session.sell_current_player(winning_team=team.id, sale_price=1)
+            started_session.sell_current_player(winning_team=team.id, sale_price=player_base_price(current))
             break
         sell_or_unsold(started_session)
 
@@ -266,7 +372,9 @@ def test_round_3_transaction_appears_if_present(hidden_root, started_session) ->
 
     team = pick_eligible_team(started_session.current_player, started_session.teams, started_session.players)
     assert started_session.current_player.id == forced_id
-    started_session.sell_current_player(winning_team=team.id, sale_price=1)
+    started_session.sell_current_player(
+        winning_team=team.id, sale_price=player_base_price(started_session.current_player)
+    )
 
     screen = build_screen(hidden_root, started_session)
     try:
@@ -561,17 +669,7 @@ def test_complete_session_is_readable(hidden_root, started_session) -> None:
 
 
 def test_blocked_session_is_readable(hidden_root) -> None:
-    # Seed 7 deterministically reaches BLOCKED under this "fewest roster
-    # size" team-selection strategy (verified directly; not every seed
-    # does — most complete cleanly, which is exercised by the other tests
-    # in this file).
-    session = AuctionSession()
-    session.start(seed=7)
-    guard = 0
-    while session.auction.status != AuctionStatus.BLOCKED and guard < 200:
-        assert not session.is_complete, "Expected seed 7 to reach BLOCKED, not COMPLETE."
-        sell_or_unsold(session)
-        guard += 1
+    session = build_synthetic_blocked_session()
     assert session.auction.status == AuctionStatus.BLOCKED
 
     screen = build_screen(hidden_root, session)

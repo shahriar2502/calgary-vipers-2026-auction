@@ -12,7 +12,7 @@ import json
 import pytest
 
 from models.auction import AuctionStatus
-from models.player import Position
+from models.player import GK_BASE_PRICE, OUTFIELD_BASE_PRICE, Position, player_base_price
 from services import player_service
 from services import persistence_service as ps
 from services.auction_service import AuctionTransactionError, team_can_bid_for_player
@@ -49,7 +49,10 @@ def pick_eligible_team(player, teams, players):
     return min(eligible, key=lambda team: team.roster_size)
 
 
-def resolve_whole_session(session, sale_price: int = 1) -> None:
+def resolve_whole_session(session) -> None:
+    """Sells every player at its own base price (First Auction Rules V2:
+    GK/non-GK base prices are no longer both satisfied by one flat
+    price)."""
     for _ in range(500):
         if session.auction.status in (AuctionStatus.COMPLETE, AuctionStatus.BLOCKED):
             return
@@ -58,7 +61,7 @@ def resolve_whole_session(session, sale_price: int = 1) -> None:
         if team is None:
             session.mark_current_player_unsold()
         else:
-            session.sell_current_player(winning_team=team.id, sale_price=sale_price)
+            session.sell_current_player(winning_team=team.id, sale_price=player_base_price(current))
     raise AssertionError("resolve_whole_session did not reach COMPLETE/BLOCKED within 500 attempts")
 
 
@@ -214,7 +217,7 @@ def test_blocked_state_preserved(isolated_saves) -> None:
 
 def test_complete_state_preserved(isolated_saves) -> None:
     session = new_saved_session(seed=1)
-    resolve_whole_session(session, sale_price=1)
+    resolve_whole_session(session)
     assert session.is_complete is True
     restored = ps.load_session(ps.session_save_path(session.mode, session.session_id))
     assert restored.is_complete is True
@@ -305,14 +308,27 @@ def test_resumed_budget_reserve_rule_still_works(isolated_saves) -> None:
         remaining.remove(non_gk_id)
         session.auction.queue = queue[: session.auction.current_queue_position] + [non_gk_id] + remaining
 
-    # Fill Blackout FC to 5/8 with cheap non-GK purchases, leaving little budget.
+    # Fill Blackout FC to 5/8 with cheap non-GK purchases (Blackout still
+    # has no GK), leaving little budget.
     for _ in range(4):
         force_next_non_gk_current()
-        session.sell_current_player(winning_team=blackout.id, sale_price=1)
+        session.sell_current_player(winning_team=blackout.id, sale_price=OUTFIELD_BASE_PRICE)
     restored = ps.load_session(ps.session_save_path(session.mode, session.session_id))
     restored_blackout = team_by_name(restored.teams, "Blackout FC")
     assert restored_blackout.roster_size == 5
-    assert restored_blackout.maximum_legal_bid == restored_blackout.remaining_budget - 2
+
+    # First Auction Rules V2: 3 slots remain (8-5), so 2 remain AFTER this
+    # next purchase; Blackout still has no GK, so the reserve is
+    # GK_BASE_PRICE for the still-needed GK slot plus OUTFIELD_BASE_PRICE
+    # for the other slot -- unless the current player IS the GK, in which
+    # case only 2 plain outfield slots remain.
+    current = restored.current_player
+    purchasing_gk = current.position == Position.GK
+    expected_reserve = (2 * OUTFIELD_BASE_PRICE) if purchasing_gk else (GK_BASE_PRICE + OUTFIELD_BASE_PRICE)
+    assert (
+        restored_blackout.maximum_legal_bid(purchasing_gk=purchasing_gk, team_has_gk=False)
+        == restored_blackout.remaining_budget - expected_reserve
+    )
 
     with pytest.raises(AuctionTransactionError):
         restored.sell_current_player(winning_team=restored_blackout.id, sale_price=restored_blackout.remaining_budget)
@@ -559,7 +575,7 @@ def test_live_save_detection_works(isolated_saves) -> None:
 
 def test_completed_session_can_still_load(isolated_saves) -> None:
     session = new_saved_session(seed=1)
-    resolve_whole_session(session, sale_price=1)
+    resolve_whole_session(session)
     assert session.is_complete is True
     restored = ps.load_session(ps.session_save_path(session.mode, session.session_id))
     assert restored.is_complete is True
@@ -746,9 +762,9 @@ def test_new_snapshot_preserves_fpl_value(isolated_saves) -> None:
     restored_rizvi = next(p for p in restored.players if p.full_name == "Rizvi Ibrahim")
     assert restored_rizvi.last_season_fpl_points == 111
 
-    no_data_player = next(p for p in session.players if p.full_name == "Munem")
+    no_data_player = next(p for p in session.players if p.full_name == "Munem Morshed")
     assert no_data_player.last_season_fpl_points is None
-    restored_no_data = next(p for p in restored.players if p.full_name == "Munem")
+    restored_no_data = next(p for p in restored.players if p.full_name == "Munem Morshed")
     assert restored_no_data.last_season_fpl_points is None
 
 

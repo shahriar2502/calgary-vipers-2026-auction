@@ -34,7 +34,7 @@ from statistics import median
 from models.auction import AuctionHistoryEntry
 from models.player import Player, PlayerAuctionStatus
 from models.team import Team
-from services.auction_service import team_has_goalkeeper
+from services.auction_service import maximum_legal_bid, team_has_goalkeeper
 from services.auction_session_service import AuctionSession
 
 SOLD = "SOLD"
@@ -218,7 +218,7 @@ class TeamReport:
     max_squad_size: int
     total_spent: int
     remaining_budget: int
-    maximum_legal_bid: int
+    current_player_max_legal_bid: int | None
     has_goalkeeper: bool
     purchases_count: int
     average_purchase_price: float | None
@@ -235,11 +235,19 @@ class TeamReport:
         return self.squad_size >= self.max_squad_size
 
 
-def build_team_report(team: Team, players_by_id: dict[int, Player]) -> TeamReport:
+def build_team_report(
+    team: Team, players_by_id: dict[int, Player], current_player: Player | None = None
+) -> TeamReport:
     """Reads purchase data from each roster Player's own `sold_price`/
     `auction_status` (never from `auction.history` directly) — see this
     module's docstring for why that makes double-counting a re-auctioned
-    player structurally impossible rather than something to guard against."""
+    player structurally impossible rather than something to guard against.
+
+    `current_player_max_legal_bid` (First Auction Rules V2's player-aware
+    dynamic completion reserve) is only meaningful relative to whichever
+    player is currently up for auction, so it is `None` whenever there is
+    no `current_player` (auction not started, complete, or blocked) rather
+    than a stale or misleading number."""
     roster_players = [players_by_id[player_id] for player_id in team.roster if player_id in players_by_id]
     captain = next((player for player in roster_players if player.is_captain), None)
     purchase_players = [
@@ -276,7 +284,11 @@ def build_team_report(team: Team, players_by_id: dict[int, Player]) -> TeamRepor
         max_squad_size=team.max_squad_size,
         total_spent=team.auction_spending,
         remaining_budget=team.remaining_budget,
-        maximum_legal_bid=team.maximum_legal_bid,
+        current_player_max_legal_bid=(
+            max(maximum_legal_bid(team, current_player, players_by_id.values()), 0)
+            if current_player is not None
+            else None
+        ),
         has_goalkeeper=team_has_goalkeeper(team, players_by_id.values()),
         purchases_count=len(purchase_players),
         average_purchase_price=_average(purchase_prices),
@@ -355,10 +367,11 @@ def build_full_report(session: AuctionSession) -> AuctionReport:
 
     players_by_id = {player.id: player for player in session.players}
     history = session.auction.history
+    current_player = session.current_player
 
     return AuctionReport(
         summary=build_auction_summary(session),
         fpl_stats=calculate_fpl_statistics(history, players_by_id),
         ovr_stats=calculate_ovr_statistics(history),
-        team_reports=[build_team_report(team, players_by_id) for team in session.teams],
+        team_reports=[build_team_report(team, players_by_id, current_player) for team in session.teams],
     )

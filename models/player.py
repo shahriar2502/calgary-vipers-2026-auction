@@ -21,6 +21,15 @@ class PlayerAuctionStatus(str, Enum):
     UNSOLD = "UNSOLD"
 
 
+# First Auction Rules V2 (September 2026): the minimum legal auction price
+# for a player depends only on position — a flat per-slot 1M reserve is no
+# longer the rule (see PROJECT_CONTEXT.md's "FIRST AUCTION RULES V2" and
+# models/team.py's dynamic completion-reserve formula, which imports these
+# same two constants rather than duplicating them).
+GK_BASE_PRICE = 4
+OUTFIELD_BASE_PRICE = 2
+
+
 @dataclass(slots=True)
 class Player:
     id: int
@@ -93,3 +102,15 @@ class Player:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "Player":
         return cls(**data)
+
+
+def player_base_price(player: Player) -> int:
+    """The minimum legal auction price for `player`: `GK_BASE_PRICE` for a
+    goalkeeper, `OUTFIELD_BASE_PRICE` for every other position (see
+    PROJECT_CONTEXT.md's "FIRST AUCTION RULES V2"). Falls back to
+    `player.base_price` when the organizer has set an explicit per-player
+    override, so a future per-player base price never requires touching
+    this formula."""
+    if player.base_price is not None:
+        return player.base_price
+    return GK_BASE_PRICE if player.position == Position.GK else OUTFIELD_BASE_PRICE

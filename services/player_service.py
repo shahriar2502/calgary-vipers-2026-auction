@@ -14,8 +14,8 @@ from pathlib import Path
 
 from models.player import Player, Position
 from models.team import Team
+from services.config_service import ROOT_DIR
 
-ROOT_DIR = Path(__file__).resolve().parent.parent
 DEFAULT_PLAYERS_PATH = ROOT_DIR / "data" / "players.json"
 DEFAULT_TEAMS_PATH = ROOT_DIR / "data" / "teams.json"
 

@@ -28,8 +28,8 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 
 from models.auction import Auction, AuctionHistoryEntry, AuctionStatus
-from models.player import Player, PlayerAuctionStatus, Position
-from models.team import MINIMUM_LEGAL_PRICE, Team
+from models.player import Player, PlayerAuctionStatus, Position, player_base_price
+from models.team import Team
 
 SOLD = "SOLD"
 UNSOLD = "UNSOLD"
@@ -95,45 +95,78 @@ def team_has_goalkeeper(team: Team, players: Iterable[Player]) -> bool:
     )
 
 
-def team_can_bid_for_player(team: Team, player: Player, players: Iterable[Player]) -> bool:
-    """Whether `team` could currently legally buy `player`, ignoring the
-    specific proposed price.
+def maximum_legal_bid(team: Team, player: Player, players: Iterable[Player]) -> int:
+    """The authoritative, player-aware maximum legal bid `team` could pay
+    for `player` right now — the single source every caller (SOLD
+    validation, live-bid validation, blocked-auction detection, and every
+    UI/report/phone display) must use instead of re-deriving the dynamic
+    completion-reserve formula itself. See PROJECT_CONTEXT.md's "FIRST
+    AUCTION RULES V2" for the formula and worked examples.
+    """
+    purchasing_gk = player.position == Position.GK
+    team_has_gk = team_has_goalkeeper(team, players)
+    return team.maximum_legal_bid(purchasing_gk=purchasing_gk, team_has_gk=team_has_gk)
 
-    Considers roster space, the at-most-one-goalkeeper-per-team rule, and
-    (pre-Milestone-9 budget reserve fix) whether the team could legally
-    pay even the minimum legal price for this player while preserving
-    enough budget to fill every remaining roster slot afterward —
-    `team.maximum_legal_bid` doesn't depend on the eventual price, only on
-    the team's own roster/budget state, so this can be checked before a
-    price is known. This is used by the UI to proactively disable
-    ineligible teams and by this module's own blocked-auction detection —
-    it does not replace `process_sale`'s own validation of a *specific*
-    price, which remains authoritative for an actual transaction attempt.
+
+def team_can_bid_for_player(team: Team, player: Player, players: Iterable[Player]) -> bool:
+    """Whether `team` could currently legally buy `player` at its own
+    minimum base price, ignoring any specific higher proposed price — the
+    single authoritative eligibility gate reused by SOLD validation,
+    live-bid validation, blocked-auction detection, and every UI
+    eligibility check.
+
+    Delegates entirely to `Team.can_buy_player` (roster space, the
+    at-most-one-goalkeeper-per-team rule, whether this purchase would
+    strand the team's mandatory goalkeeper slot, and the dynamic
+    completion reserve — see PROJECT_CONTEXT.md's "FIRST AUCTION RULES
+    V2") — no separate formula lives here. This is used by the UI to
+    proactively disable ineligible teams and by this module's own
+    blocked-auction detection; it does not replace `process_sale`'s own
+    validation of a *specific* price, which remains authoritative for an
+    actual transaction attempt.
+    """
+    purchasing_gk = player.position == Position.GK
+    team_has_gk = team_has_goalkeeper(team, players)
+    return team.can_buy_player(
+        player.id, player_base_price(player), purchasing_gk=purchasing_gk, team_has_gk=team_has_gk
+    )
+
+
+def team_ineligibility_reason(team: Team, player: Player, players: Iterable[Player]) -> str:
+    """Human-readable reason `team` cannot currently bid on `player` at
+    all, regardless of price — shared by every caller (a phone's rejected
+    bid, the Live Auction desktop error banner) so the wording can never
+    drift between them. Only meaningful when `team_can_bid_for_player` is
+    already False; callers should check that first.
     """
     if team.roster_size >= team.max_squad_size:
-        return False
-    if player.position == Position.GK and team_has_goalkeeper(team, players):
-        return False
-    if team.maximum_legal_bid < MINIMUM_LEGAL_PRICE:
-        return False
-    return True
+        return f"{team.name}'s roster is full."
+    purchasing_gk = player.position == Position.GK
+    team_has_gk = team_has_goalkeeper(team, players)
+    if purchasing_gk and team_has_gk:
+        return f"{team.name} already has a goalkeeper."
+    if team.minimum_completion_cost_after_purchase(purchasing_gk=purchasing_gk, team_has_gk=team_has_gk) is None:
+        return f"{team.name} must keep its final roster slot open for a mandatory goalkeeper."
+    return budget_reserve_violation_message(team, player, players)
 
 
-def budget_reserve_violation_message(team: Team) -> str:
+def budget_reserve_violation_message(team: Team, player: Player, players: Iterable[Player]) -> str:
     """Human-readable explanation of why `team` cannot legally pay more
-    than its current `maximum_legal_bid`, shared by `process_sale`'s
-    rejection and the Live Auction UI's pre-confirmation check so the
-    wording can never drift between the two (see PROJECT_CONTEXT.md's
-    "PRE-M9 BUDGET RESERVE RULE").
+    than its current player-aware `maximum_legal_bid`, shared by
+    `process_sale`'s rejection and the Live Auction UI's pre-confirmation
+    check so the wording can never drift between the two (see
+    PROJECT_CONTEXT.md's "FIRST AUCTION RULES V2").
     """
+    purchasing_gk = player.position == Position.GK
+    team_has_gk = team_has_goalkeeper(team, players)
+    reserve = team.minimum_completion_cost_after_purchase(purchasing_gk=purchasing_gk, team_has_gk=team_has_gk)
     slots_after_purchase = max(team.remaining_required_purchases - 1, 0)
-    if slots_after_purchase > 0:
-        reserve = slots_after_purchase * MINIMUM_LEGAL_PRICE
+    if reserve and slots_after_purchase > 0:
         spot_word = "spot" if slots_after_purchase == 1 else "spots"
-        displayed_max = max(team.maximum_legal_bid, 0)
+        displayed_max = max(maximum_legal_bid(team, player, players), 0)
         return (
-            f"{team.name} must reserve {reserve}M of its remaining budget for its "
-            f"{slots_after_purchase} remaining roster {spot_word}. Maximum legal price is {displayed_max}M."
+            f"{team.name} must reserve {reserve}M of its remaining budget to complete its "
+            f"{slots_after_purchase} remaining roster {spot_word} at minimum prices. Maximum legal price is {displayed_max}M."
         )
     return "Team does not have enough budget."
 
@@ -172,10 +205,11 @@ def _resolve_team(teams: list[Team], winning_team: int | str) -> Team | None:
 
 
 def _validate_sale_price(sale_price: object) -> int:
-    # MINIMUM_LEGAL_PRICE is 1, so "< MINIMUM_LEGAL_PRICE" for an int is the
-    # same threshold as the previous hard-coded "<= 0" — expressed via the
-    # shared constant instead of a second magic number.
-    if isinstance(sale_price, bool) or not isinstance(sale_price, int) or sale_price < MINIMUM_LEGAL_PRICE:
+    # A generic "is this even a legal kind of number" check — the real
+    # minimum (the player's own base price, GK_BASE_PRICE/OUTFIELD_BASE_
+    # PRICE) is checked separately in process_sale, since it depends on
+    # the specific player being sold.
+    if isinstance(sale_price, bool) or not isinstance(sale_price, int) or sale_price < 1:
         raise AuctionTransactionError("Sale price must be a positive integer.")
     return sale_price
 
@@ -259,16 +293,26 @@ def process_sale(
 
     if any(player.id in other_team.roster for other_team in teams):
         raise AuctionTransactionError("Player is already assigned to a team.")
-    if price > team.maximum_legal_bid:
-        raise AuctionTransactionError(budget_reserve_violation_message(team))
-    if team.roster_size >= team.max_squad_size:
-        raise AuctionTransactionError("Team roster is full.")
-    if player.position == Position.GK and team_has_goalkeeper(team, players):
-        raise AuctionTransactionError("Team already has a goalkeeper.")
+
+    # First Auction Rules V2: roster space, the one-goalkeeper-per-team
+    # rule, and whether this purchase would strand the mandatory
+    # goalkeeper slot are all checked together via the single
+    # authoritative eligibility gate (Team.can_buy_player, resolved here
+    # by team_can_bid_for_player) — never re-derived inline.
+    purchasing_gk = player.position == Position.GK
+    team_has_gk = team_has_goalkeeper(team, players)
+    if not team_can_bid_for_player(team, player, players):
+        raise AuctionTransactionError(team_ineligibility_reason(team, player, players))
+
+    base_price = player_base_price(player)
+    if price < base_price:
+        raise AuctionTransactionError(f"{player.full_name}'s minimum price is {base_price}M.")
+    if price > team.maximum_legal_bid(purchasing_gk=purchasing_gk, team_has_gk=team_has_gk):
+        raise AuctionTransactionError(budget_reserve_violation_message(team, player, players))
 
     sequence = _next_sequence(auction)
 
-    team.add_purchased_player(player.id, price)
+    team.add_purchased_player(player.id, price, purchasing_gk=purchasing_gk, team_has_gk=team_has_gk)
 
     player.auction_status = PlayerAuctionStatus.SOLD
     player.sold_price = price
@@ -281,7 +325,7 @@ def process_sale(
         player_name=player.full_name,
         position=player.position.value,
         overall_rating=player.overall_rating,
-        base_price=player.base_price,
+        base_price=player_base_price(player),
         status=SOLD,
         team=team.name,
         sold_price=price,
@@ -343,7 +387,7 @@ def process_unsold(
         player_name=player.full_name,
         position=player.position.value,
         overall_rating=player.overall_rating,
-        base_price=player.base_price,
+        base_price=player_base_price(player),
         status=UNSOLD,
         round_number=auction.round_number,
     )

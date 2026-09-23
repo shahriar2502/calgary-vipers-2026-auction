@@ -239,7 +239,7 @@ def _build_team_panel(
         ("Purchases", str(team_report.purchases_count)),
         ("Avg Purchase", _optional_money(team_report.average_purchase_price)),
         ("Highest Purchase", team_report.highest_purchase_player.full_name if team_report.highest_purchase_player else "N/A"),
-        ("Max Next Bid", _money(team_report.maximum_legal_bid)),
+        ("Current Player Max Legal Bid", _optional_money(team_report.current_player_max_legal_bid)),
     ]
     for index, (label, value) in enumerate(stats):
         row, col = divmod(index, 2)
@@ -399,6 +399,31 @@ class ReportsScreen(ctk.CTkFrame):
         self._build_fpl_and_reauction(body).grid(row=3, column=0, sticky="ew", pady=(0, 20))
         self._build_comparison_section(body).grid(row=4, column=0, sticky="ew", pady=(0, 24))
         self._build_team_grid(body).grid(row=5, column=0, sticky="ew")
+
+        if self._session.is_complete and self._session.match_results:
+            self._build_post_auction_funding_section(body).grid(row=6, column=0, sticky="ew", pady=(20, 0))
+
+    def _build_post_auction_funding_section(self, parent: ctk.CTkBaseClass) -> ctk.CTkFrame:
+        """Small, read-only funding summary — the Match Results screen
+        remains the primary place for match-score entry and full budget
+        tracking; this is just a glance-friendly pointer here, computed
+        via the exact same `match_result_service` ledger, never a second
+        formula. Only shown once the first auction is COMPLETE and at
+        least one match result has been recorded."""
+        from services import match_result_service as mrs
+
+        section = ctk.CTkFrame(parent, fg_color=theme.SURFACE, corner_radius=8)
+        _build_section_label(section, "Post-Auction Funding (see Match Results)").grid(
+            row=0, column=0, columnspan=4, sticky="w", padx=16, pady=(12, 8)
+        )
+        ledgers = mrs.build_all_ledgers(self._session.teams, self._session.match_results)
+        for index, ledger in enumerate(ledgers):
+            row, col = divmod(index, 4)
+            section.grid_columnconfigure(col, weight=1)
+            _build_mini_stat(section, ledger.team.name, f"{ledger.current_transfer_budget}M").grid(
+                row=row + 1, column=col, sticky="w", padx=16, pady=(0, 14)
+            )
+        return section
 
     def _build_kpi_row(self, parent: ctk.CTkBaseClass) -> ctk.CTkFrame:
         summary = self._report.summary

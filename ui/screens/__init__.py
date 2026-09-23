@@ -14,6 +14,7 @@ from services.auction_session_service import AuctionSession
 
 from .auction_history_screen import build_auction_history_screen
 from .live_auction_screen import build_live_auction_screen
+from .match_results_screen import build_match_results_screen
 from .player_cards_screen import build_player_cards_screen
 from .players_setup_screen import build_players_setup_screen
 from .reports_screen import build_reports_screen
@@ -27,6 +28,7 @@ SCREEN_BUILDERS: dict[str, Callable[[ctk.CTkBaseClass, AuctionSession], ctk.CTkF
     "Teams": build_teams_screen,
     "Auction History": build_auction_history_screen,
     "Reports": build_reports_screen,
+    "Match Results": build_match_results_screen,
     "Settings": build_settings_screen,
 }
 
@@ -34,6 +36,7 @@ __all__ = [
     "SCREEN_BUILDERS",
     "build_auction_history_screen",
     "build_live_auction_screen",
+    "build_match_results_screen",
     "build_player_cards_screen",
     "build_players_setup_screen",
     "build_reports_screen",

@@ -13,13 +13,14 @@ from __future__ import annotations
 import json
 import customtkinter as ctk
 
-from models.player import Player, Position
+from models.player import Player, Position, player_base_price
 from models.team import Team
 from services import persistence_service, preferences_service
 from services.auction_service import (
     AuctionTransactionError,
     TransactionResult,
     budget_reserve_violation_message,
+    maximum_legal_bid,
     team_can_bid_for_player,
     team_has_goalkeeper,
 )
@@ -165,13 +166,21 @@ class LiveAuctionScreen(ctk.CTkFrame):
     def _bid_snapshot(self) -> tuple:
         """A cheap fingerprint of everything the desktop display needs to
         notice changed — including a phone bid, another desktop bid, a
-        SOLD/UNSOLD advancing to the next player, or a round transition.
-        Comparing this (rather than unconditionally re-rendering every
-        poll tick) means a quiet period with no bidding activity costs
-        nothing beyond one tuple comparison every 500ms."""
+        SOLD/UNSOLD advancing to the next player, a round transition, the
+        captain-bidding server's own lifecycle state (OFF/STARTING/
+        RUNNING/FAILED), or a captain connecting/disconnecting. Comparing
+        this (rather than unconditionally re-rendering every poll tick)
+        means a quiet period with no activity costs nothing beyond one
+        tuple comparison every 500ms — and every field here is an
+        in-memory read (a lock-protected enum, an int counter), never
+        disk or network I/O, so the comparison itself stays cheap even
+        while the server is running."""
         session = self._session
+        server = getattr(self.winfo_toplevel(), "captain_bidding_server", None)
+        server_state = server.state if server is not None else None
+        connected_count = server.auth.connected_count() if server is not None and server.is_running else None
         if not session.started or session.auction is None:
-            return (None, None, None, None, None)
+            return (None, None, None, None, None, server_state, connected_count)
         current_player = session.current_player
         return (
             current_player.id if current_player is not None else None,
@@ -179,6 +188,8 @@ class LiveAuctionScreen(ctk.CTkFrame):
             session.auction.leading_team_id,
             session.auction.status,
             session.round_number,
+            server_state,
+            connected_count,
         )
 
     def _poll_captain_bidding_state(self) -> None:
@@ -186,7 +197,16 @@ class LiveAuctionScreen(ctk.CTkFrame):
         from the web server's thread, and never touches a widget except
         through the normal `_render()` path. See services/
         captain_bidding_server.py's module docstring for the "never
-        manipulate Tk widgets from the server thread" rule this keeps."""
+        manipulate Tk widgets from the server thread" rule this keeps.
+
+        RC2 targeted debug pass: also calls `check_startup_timeout()` —
+        the bulletproof STARTING timeout backstop — so a hung startup is
+        still forced to FAILED even if the organizer navigated away from
+        Settings (whose own poll would otherwise be the only thing
+        driving that backstop) right after clicking START."""
+        server = getattr(self.winfo_toplevel(), "captain_bidding_server", None)
+        if server is not None:
+            server.check_startup_timeout()
         if not self._has_open_dialog():
             snapshot = self._bid_snapshot()
             if snapshot != self._last_bid_snapshot:
@@ -659,18 +679,33 @@ class LiveAuctionScreen(ctk.CTkFrame):
         self._build_action_row(body).grid(row=next_row, column=0, sticky="ew")
 
     def _build_current_bid_row(self, parent: ctk.CTkBaseClass) -> ctk.CTkFrame:
-        """CURRENT BID / LEADING TEAM — the one authoritative live-bid
-        display, fed by `AuctionSession.current_bid`/`leading_team` (see
-        services/live_bid_service.py). `—` before any bid, per the
-        ticket's explicit "do not pretend a 0M bid exists" rule."""
+        """BASE PRICE / CURRENT BID / LEADING TEAM — the one authoritative
+        live-bid display, fed by `AuctionSession.current_bid`/`leading_team`
+        (see services/live_bid_service.py). `—` before any bid, per the
+        ticket's explicit "do not pretend a 0M bid exists" rule. BASE PRICE
+        (First Auction Rules V2) is the current player's own minimum legal
+        price — `models.player.player_base_price`, never recomputed here."""
         row = ctk.CTkFrame(parent, fg_color=theme.SURFACE, corner_radius=12)
-        row.grid_columnconfigure((0, 1), weight=1)
+        row.grid_columnconfigure((0, 1, 2), weight=1)
 
         current_bid = self._session.auction.current_bid if self._session.auction is not None else None
         leading_team = self._session.leading_team
+        current_player = self._session.current_player
+
+        base_block = ctk.CTkFrame(row, fg_color="transparent")
+        base_block.grid(row=0, column=0, pady=16)
+        ctk.CTkLabel(
+            base_block, text="BASE PRICE", font=theme.body_font(size=12, weight="bold"), text_color=theme.TEXT_SECONDARY
+        ).pack()
+        ctk.CTkLabel(
+            base_block,
+            text=f"{player_base_price(current_player)}M" if current_player is not None else "—",
+            font=theme.heading_font(size=24),
+            text_color=theme.TEXT_PRIMARY,
+        ).pack()
 
         bid_block = ctk.CTkFrame(row, fg_color="transparent")
-        bid_block.grid(row=0, column=0, pady=16)
+        bid_block.grid(row=0, column=1, pady=16)
         ctk.CTkLabel(
             bid_block, text="CURRENT BID", font=theme.body_font(size=12, weight="bold"), text_color=theme.TEXT_SECONDARY
         ).pack()
@@ -682,7 +717,7 @@ class LiveAuctionScreen(ctk.CTkFrame):
         ).pack()
 
         team_block = ctk.CTkFrame(row, fg_color="transparent")
-        team_block.grid(row=0, column=1, pady=16)
+        team_block.grid(row=0, column=2, pady=16)
         ctk.CTkLabel(
             team_block, text="LEADING TEAM", font=theme.body_font(size=12, weight="bold"), text_color=theme.TEXT_SECONDARY
         ).pack()
@@ -731,8 +766,18 @@ class LiveAuctionScreen(ctk.CTkFrame):
     def _on_desktop_bid_clicked(self, increment: int) -> None:
         if self._selected_team_id is None:
             return
-        base = self._session.auction.current_bid or 0
-        result = self._session.place_live_bid(self._selected_team_id, base + increment)
+        current_bid = self._session.auction.current_bid if self._session.auction is not None else None
+        if current_bid is not None:
+            amount = current_bid + increment
+        else:
+            # First Auction Rules V2: before any bid exists, a quick-bid
+            # button submits max(base_price, increment) rather than the
+            # raw increment alone, so +1M on a 4M-base goalkeeper submits
+            # a legal 4M bid instead of a rejected 1M one.
+            current_player = self._session.current_player
+            base_price = player_base_price(current_player) if current_player is not None else 0
+            amount = max(base_price, increment)
+        result = self._session.place_live_bid(self._selected_team_id, amount)
         self._error_message = None if result.accepted else result.reason
         self._render()
 
@@ -786,7 +831,11 @@ class LiveAuctionScreen(ctk.CTkFrame):
 
         server = getattr(self.winfo_toplevel(), "captain_bidding_server", None)
         if server is not None and server.is_running:
-            bidding_text = f"CAPTAIN BIDDING: RUNNING  ({server.lan_url.removeprefix('http://')})"
+            active = server.auth.connected_count()
+            bidding_text = (
+                f"CAPTAIN BIDDING: RUNNING  ({server.lan_url.removeprefix('http://')})  "
+                f"{active} / {len(server.auth.team_ids)} ACTIVE"
+            )
             bidding_color = theme.ACCENT_GREEN
         else:
             bidding_text = "CAPTAIN BIDDING: OFF"
@@ -931,6 +980,11 @@ class LiveAuctionScreen(ctk.CTkFrame):
     ) -> ctk.CTkFrame:
         row = ctk.CTkFrame(parent, fg_color="transparent")
         showing_gk = current_player.position == Position.GK
+        # Mixed mode (Phase 2): a purely informational indicator — never
+        # disables or hides a team's manual bid controls, whether or not
+        # its captain phone is currently connected. See
+        # services/captain_auth_service.py.
+        server = getattr(self.winfo_toplevel(), "captain_bidding_server", None)
         for index, team in enumerate(teams):
             row.grid_columnconfigure(index, weight=1)
             selected = self._selected_team_id == team.id
@@ -942,19 +996,30 @@ class LiveAuctionScreen(ctk.CTkFrame):
                 f"{team.remaining_budget}M",
                 f"{team.roster_size} / {team.max_squad_size}",
                 f"{remaining_slots} slots",
-                f"Max {max(team.maximum_legal_bid, 0)}M",
+                f"Max {max(maximum_legal_bid(team, current_player, players), 0)}M",
             ]
+            if server is not None and server.is_running and server.auth.is_connected(team.id):
+                lines.append("PHONE CONNECTED")
             if showing_gk:
                 lines.append("GK 1/1" if team_has_goalkeeper(team, players) else "GK 0/1")
             if not eligible:
+                purchasing_gk = current_player.position == Position.GK
+                team_has_gk = team_has_goalkeeper(team, players)
                 if remaining_slots == 0:
                     reason = "FULL"
-                elif current_player.position == Position.GK and team_has_goalkeeper(team, players):
+                elif purchasing_gk and team_has_gk:
                     reason = "HAS GK"
+                elif team.minimum_completion_cost_after_purchase(
+                    purchasing_gk=purchasing_gk, team_has_gk=team_has_gk
+                ) is None:
+                    # First Auction Rules V2: this would be the team's last
+                    # roster slot without ever acquiring its mandatory GK.
+                    reason = "NEEDS GK"
                 else:
-                    # Pre-Milestone-9 budget reserve rule: not enough
-                    # budget left to buy anything without making the
-                    # remaining roster slots impossible to fill later.
+                    # First Auction Rules V2 dynamic completion reserve:
+                    # not enough budget left to buy anything without
+                    # making the remaining roster slots impossible to fill
+                    # later at their own minimum base prices.
                     reason = "LOW BUDGET"
                 lines.append(reason)
 
@@ -1044,7 +1109,15 @@ class LiveAuctionScreen(ctk.CTkFrame):
             current_value = int(text) if text else 0
         except ValueError:
             current_value = 0
-        self._price_var.set(str(current_value + amount))
+        if current_value > 0:
+            self._price_var.set(str(current_value + amount))
+        else:
+            # First Auction Rules V2: starting from an empty/zero field,
+            # submit max(base_price, increment) rather than the raw
+            # increment alone, matching the CURRENT BID quick-bid buttons.
+            current_player = self._session.current_player
+            base_price = player_base_price(current_player) if current_player is not None else 0
+            self._price_var.set(str(max(base_price, amount)))
 
     def _build_action_row(self, parent: ctk.CTkBaseClass) -> ctk.CTkFrame:
         row = ctk.CTkFrame(parent, fg_color="transparent")
@@ -1125,16 +1198,23 @@ class LiveAuctionScreen(ctk.CTkFrame):
                 self._render()
                 return
 
-        # Pre-Milestone-9 budget reserve rule: reject before even opening
-        # the confirmation dialog rather than silently clamping the price
-        # or letting the organizer confirm a transaction the service layer
-        # will reject anyway — see PROJECT_CONTEXT.md's "PRE-M9 BUDGET
-        # RESERVE RULE". process_sale enforces this independently too, so
+        # First Auction Rules V2: reject before even opening the
+        # confirmation dialog rather than silently clamping the price or
+        # letting the organizer confirm a transaction the service layer
+        # will reject anyway — see PROJECT_CONTEXT.md's "FIRST AUCTION
+        # RULES V2". process_sale enforces this independently too, so
         # this is purely an earlier, friendlier surfacing of the same rule.
-        if price > team.maximum_legal_bid:
-            self._error_message = budget_reserve_violation_message(team)
-            self._render()
-            return
+        current_player = self._session.current_player
+        if current_player is not None:
+            base_price = player_base_price(current_player)
+            if price < base_price:
+                self._error_message = f"{current_player.full_name}'s minimum price is {base_price}M."
+                self._render()
+                return
+            if price > maximum_legal_bid(team, current_player, self._session.players):
+                self._error_message = budget_reserve_violation_message(team, current_player, self._session.players)
+                self._render()
+                return
 
         # Settings' "Confirm SOLD transactions" preference (default ON)
         # controls only whether this dialog appears — every validation

@@ -16,3 +16,13 @@ saves/
 # confirmation toggles) — machine-specific, never tournament data. Created
 # automatically on first save (see services/preferences_service.py).
 config/
+
+# Windows Packaging — RC0: PyInstaller build output. Generated fresh by
+# build_windows.bat every time; never commit a built .exe. The build
+# spec itself (calgary_vipers_auction.spec) IS intentionally tracked —
+# it's part of the reproducible build process, not generated output.
+build/
+build_debug/
+dist/
+dist_debug/
+

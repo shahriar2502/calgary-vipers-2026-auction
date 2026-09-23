@@ -44,6 +44,17 @@ VARIANT_COLORS = [
 # regenerates each distinct background at most once, not on every call.
 _BACKGROUND_CACHE: dict[tuple[int, int, int, int, bool], Image.Image] = {}
 
+# The full composited card (background + this player's framed photo) is
+# also cached per player + geometry (RC1 stabilization ticket): measured
+# at ~35-40ms per call (PIL photo load/crop/paste), Live Auction's 500ms
+# poll re-renders whenever *anything* it tracks changes — including a
+# server-state or connected-captain-count change that has nothing to do
+# with the current player — and would otherwise redo this same work for
+# the same player every time. Keyed on `photo_path` too, not just `id`,
+# so a hypothetical future roster edit that swaps a player's photo can
+# never serve a stale cached image.
+_CARD_IMAGE_CACHE: dict[tuple, tuple[Image.Image, bool]] = {}
+
 
 def hex_to_rgb(hex_color: str) -> tuple[int, int, int]:
     hex_color = hex_color.lstrip("#")
@@ -189,7 +200,29 @@ def build_player_card_image(
     Returns (image, has_real_photo) — the caller decides whether to also
     draw an initials label and whether to count this card toward any
     "real photo loaded" bookkeeping.
+
+    The result is cached per player + every geometry argument (see
+    `_CARD_IMAGE_CACHE` above); a cache hit returns a fresh `.copy()` so
+    a caller mutating its own copy (or handing it to `ctk.CTkImage`)
+    can never corrupt the cached original — the same precaution
+    `build_card_background`'s cache already takes.
     """
+    cache_key = (
+        player.id,
+        player.photo_path,
+        player.is_captain,
+        background_size,
+        photo_size,
+        photo_offset,
+        corner_radius,
+        photo_corner_radius,
+        photo_border_width,
+    )
+    cached = _CARD_IMAGE_CACHE.get(cache_key)
+    if cached is not None:
+        image, has_photo = cached
+        return image.copy(), has_photo
+
     variant = card_variant(player)
     primary_rgb = hex_to_rgb(VARIANT_COLORS[variant][0])
 
@@ -202,4 +235,6 @@ def build_player_card_image(
         panel = photo_placeholder_panel(photo_size, primary_rgb, photo_corner_radius, photo_border_width)
     art.alpha_composite(panel, photo_offset)
 
-    return art, pil_photo is not None
+    has_photo = pil_photo is not None
+    _CARD_IMAGE_CACHE[cache_key] = (art, has_photo)
+    return art.copy(), has_photo

@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 from models.auction import Auction, AuctionStatus
-from models.player import Player, PlayerAuctionStatus, Position
+from models.player import Player, PlayerAuctionStatus, Position, player_base_price
 from models.team import Team
 from services.auction_service import (
     AuctionTransactionError,
@@ -60,7 +60,7 @@ def test_first_pass_unsold_player_enters_round_2() -> None:
     teams = _teams()
     auction = Auction(queue=[901, 902], status=AuctionStatus.IN_PROGRESS)
 
-    process_sale(auction, players, teams, winning_team="Blackout FC", sale_price=1)
+    process_sale(auction, players, teams, winning_team="Blackout FC", sale_price=2)
     process_unsold(auction, players, teams)
 
     assert auction.round_number == 2
@@ -72,7 +72,7 @@ def test_sold_player_does_not_enter_round_2() -> None:
     teams = _teams()
     auction = Auction(queue=[901, 902, 903], status=AuctionStatus.IN_PROGRESS)
 
-    process_sale(auction, players, teams, winning_team="Blackout FC", sale_price=1)
+    process_sale(auction, players, teams, winning_team="Blackout FC", sale_price=2)
     process_unsold(auction, players, teams)
     process_unsold(auction, players, teams)
 
@@ -88,8 +88,8 @@ def test_two_unsold_players_produce_a_2_player_round_2_queue() -> None:
     teams = _teams()
     auction = Auction(queue=[901, 902, 903, 904], status=AuctionStatus.IN_PROGRESS)
 
-    process_sale(auction, players, teams, winning_team="Blackout FC", sale_price=1)
-    process_sale(auction, players, teams, winning_team="Darkstar FC", sale_price=1)
+    process_sale(auction, players, teams, winning_team="Blackout FC", sale_price=2)
+    process_sale(auction, players, teams, winning_team="Darkstar FC", sale_price=2)
     process_unsold(auction, players, teams)
     process_unsold(auction, players, teams)
 
@@ -145,7 +145,7 @@ def test_unsold_in_round_2_can_enter_round_3() -> None:
     process_unsold(auction, players, teams)
     assert auction.round_number == 2
 
-    sold_result = process_sale(auction, players, teams, winning_team="Blackout FC", sale_price=1)
+    sold_result = process_sale(auction, players, teams, winning_team="Blackout FC", sale_price=2)
     process_unsold(auction, players, teams)
     assert auction.round_number == 3
     # Whichever of the two wasn't just sold is the one still pending.
@@ -162,7 +162,7 @@ def test_player_unsold_twice_and_sold_third_time_works() -> None:
     process_unsold(auction, players, teams)  # 902 UNSOLD (round 1) -> round 2 starts
     assert auction.round_number == 2
 
-    process_sale(auction, players, teams, winning_team="Blackout FC", sale_price=1)  # sell whichever is first
+    process_sale(auction, players, teams, winning_team="Blackout FC", sale_price=2)  # sell whichever is first
     process_unsold(auction, players, teams)  # the other UNSOLD again -> round 3 with just them
     assert auction.round_number == 3
     remaining_id = auction.queue[0]
@@ -211,7 +211,7 @@ def test_auction_does_not_complete_merely_because_first_28_attempts_finished() -
             process_unsold(auction, players, teams)
             continue
         team = min(eligible, key=lambda t: t.roster_size)
-        process_sale(auction, players, teams, winning_team=team.id, sale_price=1)
+        process_sale(auction, players, teams, winning_team=team.id, sale_price=player_base_price(current))
 
     assert auction.round_number == 2
     assert auction.status == AuctionStatus.IN_PROGRESS
@@ -234,7 +234,7 @@ def test_auction_completes_only_when_all_28_eligible_players_are_sold() -> None:
             process_unsold(auction, players, teams)
         else:
             team = min(eligible, key=lambda t: t.roster_size)
-            process_sale(auction, players, teams, winning_team=team.id, sale_price=1)
+            process_sale(auction, players, teams, winning_team=team.id, sale_price=player_base_price(current))
 
     assert auction.status == AuctionStatus.COMPLETE
     assert len(sold_player_ids(auction)) == 28
@@ -252,7 +252,7 @@ def test_sold_count_and_remaining_count_derive_correctly_across_rounds() -> None
     assert session.remaining_count == 28  # round-2 queue, all 28 still pending
 
     blackout = team_by_name(session.teams, "Blackout FC")
-    session.sell_current_player(winning_team=blackout.id, sale_price=1)
+    session.sell_current_player(winning_team=blackout.id, sale_price=player_base_price(session.current_player))
     assert session.sold_count == 1
     assert session.remaining_count == 27  # one round-2 slot resolved
 
@@ -367,7 +367,7 @@ def test_exactly_one_gk_final_team_state_can_be_validated() -> None:
             process_unsold(auction, players, teams)
         else:
             team = min(eligible, key=lambda t: t.roster_size)
-            process_sale(auction, players, teams, winning_team=team.id, sale_price=1)
+            process_sale(auction, players, teams, winning_team=team.id, sale_price=player_base_price(current))
 
     assert auction.status == AuctionStatus.COMPLETE
     for team in teams:
@@ -415,22 +415,42 @@ def _team_at_size(base_team: Team, size: int) -> Team:
 
 
 def test_team_at_7_of_8_can_buy_one_more_player() -> None:
-    players = _players([(901, "P1", Position.DEF)])
+    # _team_at_size(base, 7) fills the extra 6 slots with ids 800..805 --
+    # give id 800 a real GK Player so this team already owns its mandatory
+    # goalkeeper and its final purchase (a non-GK) is legal, not the
+    # "would strand the mandatory GK slot" case this ticket's rules
+    # otherwise reject (see test_team_at_7_of_8_with_no_gk_cannot_buy_a_
+    # non_gk_final_slot below).
+    gk = Player(id=800, full_name="Existing GK", short_name="GK1", position=Position.GK, overall_rating=80)
+    players = _players([(901, "P1", Position.DEF)]) + [gk]
     teams = _teams()
     teams[0] = _team_at_size(teams[0], 7)
     auction = Auction(queue=[901], status=AuctionStatus.IN_PROGRESS)
-    result = process_sale(auction, players, teams, winning_team=teams[0].id, sale_price=1)
+    result = process_sale(auction, players, teams, winning_team=teams[0].id, sale_price=2)
     assert result.outcome == "SOLD"
     assert teams[0].roster_size == 8
 
 
 def test_team_becomes_8_of_8_after_successful_purchase() -> None:
-    players = _players([(901, "P1", Position.DEF)])
+    gk = Player(id=800, full_name="Existing GK", short_name="GK1", position=Position.GK, overall_rating=80)
+    players = _players([(901, "P1", Position.DEF)]) + [gk]
     teams = _teams()
     teams[0] = _team_at_size(teams[0], 7)
     auction = Auction(queue=[901], status=AuctionStatus.IN_PROGRESS)
-    process_sale(auction, players, teams, winning_team=teams[0].id, sale_price=1)
+    process_sale(auction, players, teams, winning_team=teams[0].id, sale_price=2)
     assert teams[0].roster_size == teams[0].max_squad_size
+
+
+def test_team_at_7_of_8_with_no_gk_cannot_buy_a_non_gk_final_slot() -> None:
+    """First Auction Rules V2: a team's final roster slot can never be
+    spent on a non-GK if the team has not acquired its mandatory
+    goalkeeper yet -- that GK could then never be acquired."""
+    players = _players([(901, "P1", Position.DEF)])
+    teams = _teams()
+    teams[0] = _team_at_size(teams[0], 7)  # no real GK among its filler ids
+    auction = Auction(queue=[901], status=AuctionStatus.IN_PROGRESS)
+    with pytest.raises(AuctionTransactionError, match="mandatory goalkeeper"):
+        process_sale(auction, players, teams, winning_team=teams[0].id, sale_price=2)
 
 
 def test_team_at_8_of_8_cannot_buy_another_player() -> None:

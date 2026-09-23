@@ -33,13 +33,14 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 
 from models.auction import Auction, AuctionStatus
-from models.player import Player
-from models.team import MINIMUM_LEGAL_PRICE, Team
+from models.player import Player, player_base_price
+from models.team import Team
 from services.auction_service import (
     budget_reserve_violation_message,
     get_current_player,
+    maximum_legal_bid,
     team_can_bid_for_player,
-    team_has_goalkeeper,
+    team_ineligibility_reason,
 )
 
 _BID_LOCK = threading.Lock()
@@ -65,19 +66,6 @@ def _resolve_team(teams: Iterable[Team], team_id_or_name: int | str) -> Team | N
     return None
 
 
-def _ineligibility_reason(team: Team, player: Player, players: Iterable[Player]) -> str:
-    """Mirrors the reason labels `ui/screens/live_auction_screen.py`'s
-    team-status row already shows the organizer, so a rejected phone bid
-    reads consistently with what the projector already displays."""
-    if team.roster_size >= team.max_squad_size:
-        return f"{team.name} is full."
-    if player.position.value == "GK" and team_has_goalkeeper(team, players):
-        return f"{team.name} already has a goalkeeper."
-    if team.maximum_legal_bid < MINIMUM_LEGAL_PRICE:
-        return budget_reserve_violation_message(team)
-    return f"{team.name} cannot bid on this player."
-
-
 def place_bid(
     auction: Auction | None,
     players: Iterable[Player],
@@ -90,9 +78,11 @@ def place_bid(
     Every check below is enforced here regardless of caller (desktop
     button or phone API) — nothing upstream is trusted. Reuses the exact
     same eligibility/budget helpers `process_sale` itself relies on
-    (`team_can_bid_for_player`, `Team.maximum_legal_bid`,
+    (`team_can_bid_for_player`, `maximum_legal_bid`, `player_base_price`,
     `budget_reserve_violation_message`) rather than re-deriving any of
-    those formulas here.
+    those formulas here — First Auction Rules V2's base price and dynamic
+    completion reserve therefore apply identically to a phone bid, the
+    desktop's own bid buttons, and a SOLD confirmation.
     """
     with _BID_LOCK:
         if auction is None or not auction.is_initialized:
@@ -121,20 +111,23 @@ def place_bid(
             return BidResult(False, "Team not found.", current_bid, leading_team_id)
 
         if not team_can_bid_for_player(team, current_player, players):
-            return BidResult(False, _ineligibility_reason(team, current_player, players), current_bid, leading_team_id)
+            return BidResult(
+                False, team_ineligibility_reason(team, current_player, players), current_bid, leading_team_id
+            )
 
         if isinstance(bid_amount, bool) or not isinstance(bid_amount, int):
             return BidResult(False, "Bid must be a whole number.", current_bid, leading_team_id)
-        if bid_amount < MINIMUM_LEGAL_PRICE:
-            return BidResult(
-                False, f"Bid must be at least {MINIMUM_LEGAL_PRICE}M.", current_bid, leading_team_id
-            )
+        base_price = player_base_price(current_player)
+        if bid_amount < base_price:
+            return BidResult(False, f"Bid must be at least {base_price}M.", current_bid, leading_team_id)
         if current_bid is not None and bid_amount <= current_bid:
             return BidResult(
                 False, f"Bid must exceed the current highest bid of {current_bid}M.", current_bid, leading_team_id
             )
-        if bid_amount > team.maximum_legal_bid:
-            return BidResult(False, budget_reserve_violation_message(team), current_bid, leading_team_id)
+        if bid_amount > maximum_legal_bid(team, current_player, players):
+            return BidResult(
+                False, budget_reserve_violation_message(team, current_player, players), current_bid, leading_team_id
+            )
 
         auction.current_bid = bid_amount
         auction.leading_team_id = team.id

@@ -14,8 +14,10 @@ import copy
 
 import pytest
 
-from models.auction import AuctionStatus
-from services.auction_service import team_can_bid_for_player
+from models.auction import Auction, AuctionHistoryEntry, AuctionStatus
+from models.player import Player, PlayerAuctionStatus, Position, player_base_price
+from models.team import Team
+from services.auction_service import process_unsold, team_can_bid_for_player
 from services.auction_session_service import AuctionSession, SessionMode
 
 
@@ -30,12 +32,103 @@ def pick_eligible_team(player, teams, players):
     return min(eligible, key=lambda team: team.roster_size)
 
 
-def sell_or_unsold(session: AuctionSession, price: int = 5):
+def build_synthetic_blocked_session() -> AuctionSession:
+    """A minimal, deterministic BLOCKED scenario (see the identical helper
+    in tests/test_auction_history_screen.py for the full rationale: real
+    28-player canonical data can no longer reliably reach BLOCKED under
+    First Auction Rules V2's mandatory-goalkeeper-completion rule)."""
+    captains = [
+        Player(
+            id=i + 1, full_name=f"Cap{i + 1}", short_name=f"C{i + 1}", position=Position.ATT, overall_rating=80,
+            is_captain=True, assigned_team=f"Team {chr(65 + i)}", auction_eligible=False,
+            auction_status=PlayerAuctionStatus.PRE_ASSIGNED,
+        )
+        for i in range(4)
+    ]
+    teams = [
+        Team(id=i + 1, name=f"Team {chr(65 + i)}", short_name=f"T{i + 1}", captain_player_id=captains[i].id, captain_name=captains[i].full_name)
+        for i in range(4)
+    ]
+
+    auction = Auction(queue=[999], status=AuctionStatus.IN_PROGRESS)
+    all_players = list(captains)
+    sequence = 1
+    for i in range(3):
+        gk = Player(
+            id=100 + i, full_name=f"GK{i}", short_name=f"GK{i}", position=Position.GK, overall_rating=80,
+            auction_status=PlayerAuctionStatus.SOLD, sold_to=teams[i].name, sold_price=4, auction_sequence=sequence,
+        )
+        sequence += 1
+        fillers = []
+        for j in range(6):
+            filler = Player(
+                id=200 + i * 10 + j, full_name=f"F{i}_{j}", short_name=f"F{i}_{j}", position=Position.DEF,
+                overall_rating=80, auction_status=PlayerAuctionStatus.SOLD, sold_to=teams[i].name, sold_price=2,
+                auction_sequence=sequence,
+            )
+            sequence += 1
+            fillers.append(filler)
+        all_players.extend([gk] + fillers)
+        teams[i].roster = [captains[i].id, gk.id] + [f.id for f in fillers]
+        teams[i].auction_spending = 4 + 6 * 2
+        teams[i].remaining_budget = 100 - teams[i].auction_spending
+        teams[i].players_purchased = 7
+        for player in [gk] + fillers:
+            auction.history.append(
+                AuctionHistoryEntry(
+                    auction_sequence=player.auction_sequence, player_id=player.id, player_name=player.full_name,
+                    position=player.position.value, overall_rating=player.overall_rating, base_price=player.sold_price,
+                    status="SOLD", team=player.sold_to, sold_price=player.sold_price, round_number=1,
+                )
+            )
+
+    stuck_fillers = []
+    for j in range(6):
+        filler = Player(
+            id=900 + j, full_name=f"SF{j}", short_name=f"SF{j}", position=Position.DEF, overall_rating=80,
+            auction_status=PlayerAuctionStatus.SOLD, sold_to=teams[3].name, sold_price=2, auction_sequence=sequence,
+        )
+        sequence += 1
+        stuck_fillers.append(filler)
+        auction.history.append(
+            AuctionHistoryEntry(
+                auction_sequence=filler.auction_sequence, player_id=filler.id, player_name=filler.full_name,
+                position=filler.position.value, overall_rating=filler.overall_rating, base_price=filler.sold_price,
+                status="SOLD", team=filler.sold_to, sold_price=filler.sold_price, round_number=1,
+            )
+        )
+    all_players.extend(stuck_fillers)
+    teams[3].roster = [captains[3].id] + [f.id for f in stuck_fillers]
+    teams[3].auction_spending = 6 * 2
+    teams[3].remaining_budget = 100 - teams[3].auction_spending
+    teams[3].players_purchased = 6
+
+    stuck_player = Player(id=999, full_name="Stuck Player", short_name="Stuck", position=Position.DEF, overall_rating=80)
+    all_players.append(stuck_player)
+
+    session = AuctionSession()
+    session.players = all_players
+    session.teams = teams
+    session.auction = auction
+    session.mode = SessionMode.MOCK
+    session.session_id = "synthetic_blocked"
+    session.created_at = "2026-01-01T00:00:00+00:00"
+
+    result = process_unsold(auction, all_players, teams)
+    assert result.auction_status == AuctionStatus.BLOCKED
+    return session
+
+
+def sell_or_unsold(session: AuctionSession, price: int | None = None):
+    """Sells at `price`, or (First Auction Rules V2: GK/non-GK base prices
+    are no longer both satisfied by one flat fallback) the current
+    player's own base price when not given explicitly."""
     player = session.current_player
     team = pick_eligible_team(player, session.teams, session.players)
     if team is None:
         return session.mark_current_player_unsold()
-    return session.sell_current_player(winning_team=team.id, sale_price=price)
+    sale_price = price if price is not None else player_base_price(player)
+    return session.sell_current_player(winning_team=team.id, sale_price=sale_price)
 
 
 def build_screen(hidden_root, session_obj):
@@ -157,13 +250,7 @@ def test_complete_report_is_readable(hidden_root) -> None:
 
 
 def test_blocked_report_is_readable(hidden_root) -> None:
-    session = AuctionSession()
-    session.start(seed=7)  # deterministically reaches BLOCKED (see test_auction_history_screen.py)
-    guard = 0
-    while session.auction.status != AuctionStatus.BLOCKED and guard < 200:
-        assert not session.is_complete
-        sell_or_unsold(session)
-        guard += 1
+    session = build_synthetic_blocked_session()
     assert session.auction.status == AuctionStatus.BLOCKED
 
     screen = build_screen(hidden_root, session)

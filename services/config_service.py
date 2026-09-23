@@ -9,16 +9,25 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
-ROOT_DIR = Path(__file__).resolve().parent.parent
+from services.runtime_paths import RESOURCE_ROOT
+
+# `ROOT_DIR` is kept as the historical name for the *read-only resource*
+# root (assets/, data/) — every existing importer of `ROOT_DIR` across
+# this project reads canonical/bundled data, never writable state, so
+# this alias preserves all existing behavior in source mode and now
+# additionally resolves correctly inside a packaged .exe (see
+# services/runtime_paths.py). Writable state (config/, saves/) uses
+# `services.runtime_paths.WRITABLE_ROOT` directly instead.
+ROOT_DIR = RESOURCE_ROOT
 DEFAULT_SETTINGS_PATH = ROOT_DIR / "data" / "settings.json"
 
 # A plain, manually-bumped project version string for the Settings
-# screen's diagnostics section — not tied to git tags or packaging (none
-# exist yet; see PROJECT_CONTEXT.md's "Known issues").
-APP_VERSION = "0.9-dev"
+# screen's diagnostics section — not tied to git tags, bumped per
+# packaging milestone (see PROJECT_CONTEXT.md's "Windows Packaging —
+# RC0" and "Windows RC0 Packaged-Runtime Stabilization").
+APP_VERSION = "0.9.0-rc2"
 
 
 @dataclass(frozen=True, slots=True)

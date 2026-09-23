@@ -125,3 +125,59 @@ def test_build_player_card_image_with_real_photo() -> None:
 def test_variant_colors_are_two_alternating_pairs() -> None:
     assert len(player_card_art.VARIANT_COLORS) == 2
     assert player_card_art.VARIANT_COLORS[0] != player_card_art.VARIANT_COLORS[1]
+
+
+def test_build_player_card_image_is_cached_per_player_and_geometry(monkeypatch) -> None:
+    """RC1 stabilization ticket: Live Auction's 500ms poll re-renders
+    whenever anything it tracks changes — including a captain-bidding
+    server-state/connection-count change that has nothing to do with the
+    current player — and previously redid the full PIL photo load/crop/
+    paste (measured ~35-40ms) every single time. This locks in that a
+    second call for the *same* player at the *same* geometry reuses the
+    cached composite instead of reloading the photo from disk."""
+    player_card_art._CARD_IMAGE_CACHE.clear()
+    player = _player(id=20, name="Rizvi Ibrahim", photo_path="assets/players/rizvi_ibrahim.jpg")
+
+    call_count = 0
+    real_cover_fit = player_card_art.cover_fit_pil_image
+
+    def counting_cover_fit(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        return real_cover_fit(*args, **kwargs)
+
+    monkeypatch.setattr(player_card_art, "cover_fit_pil_image", counting_cover_fit)
+
+    first, first_has_photo = player_card_art.build_player_card_image(
+        player, background_size=(200, 300), photo_size=(160, 180), photo_offset=(10, 10)
+    )
+    second, second_has_photo = player_card_art.build_player_card_image(
+        player, background_size=(200, 300), photo_size=(160, 180), photo_offset=(10, 10)
+    )
+
+    assert call_count == 1  # the real photo load/crop only ran once
+    assert first_has_photo is True and second_has_photo is True
+    assert list(first.getdata()) == list(second.getdata())
+    assert first is not second  # a cache hit returns a copy, never the same object
+
+
+def test_build_player_card_image_cache_is_keyed_by_player_and_geometry(monkeypatch) -> None:
+    """A different player, or the same player at a different size, must
+    never reuse another entry's cached image."""
+    player_card_art._CARD_IMAGE_CACHE.clear()
+    rizvi = _player(id=20, name="Rizvi Ibrahim", photo_path="assets/players/rizvi_ibrahim.jpg")
+    other_player = _player(id=21, name="No Photo Player", photo_path=None)
+
+    rizvi_image, _ = player_card_art.build_player_card_image(
+        rizvi, background_size=(200, 300), photo_size=(160, 180), photo_offset=(10, 10)
+    )
+    other_image, other_has_photo = player_card_art.build_player_card_image(
+        other_player, background_size=(200, 300), photo_size=(160, 180), photo_offset=(10, 10)
+    )
+    larger_rizvi_image, _ = player_card_art.build_player_card_image(
+        rizvi, background_size=(400, 500), photo_size=(160, 180), photo_offset=(10, 10)
+    )
+
+    assert other_has_photo is False
+    assert list(rizvi_image.getdata()) != list(other_image.getdata())
+    assert rizvi_image.size != larger_rizvi_image.size

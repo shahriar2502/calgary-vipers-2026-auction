@@ -33,8 +33,8 @@ EXPECTED_POSITIONS = {
 EXPECTED_RATINGS = {
     "Samin Haque": 87,
     "Rizvi Ibrahim": 90,
-    "Munem": 89,
-    "Sajid Khalid": 75,
+    "Munem Morshed": 89,
+    "Shadman Sakib": 79,
 }
 
 EXPECTED_CAPTAIN_TEAMS = {

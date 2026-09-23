@@ -4,12 +4,13 @@ from pathlib import Path
 import pytest
 
 from models.auction import Auction, AuctionHistoryEntry, AuctionStatus
-from models.player import Player, PlayerAuctionStatus, Position
+from models.player import Player, PlayerAuctionStatus, Position, player_base_price
 from models.team import Team
 from services.auction_service import (
     AuctionTransactionError,
     eligible_for_reauction,
     get_current_player,
+    maximum_legal_bid,
     process_sale,
     process_unsold,
     resolved_player_ids,
@@ -58,11 +59,13 @@ def pick_eligible_team(player: Player, teams: list[Team], players: list[Player])
     return min(eligible, key=lambda team: team.roster_size)
 
 
-def resolve_whole_queue(auction: Auction, players: list[Player], teams: list[Team], sale_price: int = 1) -> None:
+def resolve_whole_queue(auction: Auction, players: list[Player], teams: list[Team]) -> None:
     """Drive `auction` to completion or a blocked state, selling every
-    player to the first team that can legally take them and marking
-    UNSOLD only when no team currently can. A safety cap avoids an
-    infinite loop if production code regresses."""
+    player to the first team that can legally take them (always at that
+    exact player's own base price — First Auction Rules V2 means a flat
+    sale price can no longer work uniformly across GK and non-GK players)
+    and marking UNSOLD only when no team currently can. A safety cap
+    avoids an infinite loop if production code regresses."""
     for _ in range(500):
         if auction.status in (AuctionStatus.COMPLETE, AuctionStatus.BLOCKED):
             return
@@ -71,7 +74,7 @@ def resolve_whole_queue(auction: Auction, players: list[Player], teams: list[Tea
         if team is None:
             process_unsold(auction, players, teams)
         else:
-            process_sale(auction, players, teams, winning_team=team.id, sale_price=sale_price)
+            process_sale(auction, players, teams, winning_team=team.id, sale_price=player_base_price(current))
     raise AssertionError("resolve_whole_queue did not reach COMPLETE/BLOCKED within 500 attempts")
 
 
@@ -194,15 +197,20 @@ def test_boolean_sale_price_rejected() -> None:
 
 
 def test_sale_at_exact_maximum_legal_bid_succeeds() -> None:
-    # Pre-Milestone-9 budget reserve fix: a fresh team (roster 1/8, 100M)
-    # still needs 7 more players, so it may not spend its entire 100M on
-    # the first one — only up to maximum_legal_bid (94M, reserving 6M for
-    # the 6 slots still needed after this purchase). See
-    # PROJECT_CONTEXT.md's "PRE-M9 BUDGET RESERVE RULE".
+    # First Auction Rules V2: a fresh team (roster 1/8, 100M, no GK yet)
+    # still needs 7 more players including a mandatory GK, so it may not
+    # spend its entire 100M on the first one — only up to its player-aware
+    # maximum_legal_bid. See PROJECT_CONTEXT.md's "FIRST AUCTION RULES V2".
     auction, players, teams = build_state()
     blackout = team_by_name(teams, "Blackout FC")
-    max_legal = blackout.maximum_legal_bid
-    assert max_legal == 94
+    current = get_current_player(auction, players)
+    max_legal = maximum_legal_bid(blackout, current, players)
+    # Whichever position the current player happens to be for this seed:
+    # if it IS the GK, no future GK reserve is needed and 6 outfield slots
+    # remain; otherwise GK_BASE_PRICE (4M) is reserved for the still-needed
+    # GK slot plus OUTFIELD_BASE_PRICE (2M) for the other 5 remaining slots.
+    expected = 100 - (6 * 2) if current.position == Position.GK else 100 - (4 + 5 * 2)
+    assert max_legal == expected
     result = process_sale(auction, players, teams, winning_team="Blackout FC", sale_price=max_legal)
     assert result.outcome == "SOLD"
     assert blackout.remaining_budget == 100 - max_legal
@@ -416,13 +424,14 @@ def _force_one_unsold_then_resolve_round_one(auction: Auction, players: list[Pla
     of seeds), then sell every other round-1 player to whichever team can
     legally take them at a uniform 1M. Returns the forced player's id.
 
-    Deliberately forces the first *non-goalkeeper* player it sees: with a
-    uniform 1M sale price, at most 27 of the other teams' combined 28
-    purchase slots get filled by the remaining round-1 sales, so by the
-    pigeonhole principle at least one team is guaranteed to still have
-    roster room (and, since the forced player isn't a GK, the one-GK rule
-    can never be the reason it's excluded) once round 2 begins — making
-    this helper reliable regardless of which seed calls it.
+    Deliberately forces the first *non-goalkeeper* player it sees: with
+    each sale at that exact player's own base price, at most 27 of the
+    other teams' combined 28 purchase slots get filled by the remaining
+    round-1 sales, so by the pigeonhole principle at least one team is
+    guaranteed to still have roster room (and, since the forced player
+    isn't a GK, the one-GK rule can never be the reason it's excluded)
+    once round 2 begins — making this helper reliable regardless of which
+    seed calls it.
     """
     forced_unsold_player_id: int | None = None
     while auction.round_number == 1 and not auction.is_complete and auction.status != AuctionStatus.BLOCKED:
@@ -435,7 +444,7 @@ def _force_one_unsold_then_resolve_round_one(auction: Auction, players: list[Pla
         if team is None:
             process_unsold(auction, players, teams)
         else:
-            process_sale(auction, players, teams, winning_team=team.id, sale_price=1)
+            process_sale(auction, players, teams, winning_team=team.id, sale_price=player_base_price(current))
     assert forced_unsold_player_id is not None
     return forced_unsold_player_id
 
@@ -451,7 +460,7 @@ def test_reauction_round_history_entries_record_the_new_round_number() -> None:
     current = get_current_player(auction, players)
     team = pick_eligible_team(current, teams, players)
     assert team is not None  # guaranteed by the pigeonhole argument above
-    process_sale(auction, players, teams, winning_team=team.id, sale_price=1)
+    process_sale(auction, players, teams, winning_team=team.id, sale_price=player_base_price(current))
 
     latest_entry = auction.history[-1]
     assert latest_entry.round_number == 2
@@ -476,13 +485,13 @@ def test_history_preserves_every_attempt_for_a_player_marked_unsold_then_sold() 
         if current.id == forced_unsold_player_id:
             team = pick_eligible_team(current, teams, players)
             assert team is not None  # guaranteed by the pigeonhole argument above
-            process_sale(auction, players, teams, winning_team=team.id, sale_price=1)
+            process_sale(auction, players, teams, winning_team=team.id, sale_price=player_base_price(current))
             break
         team = pick_eligible_team(current, teams, players)
         if team is None:
             process_unsold(auction, players, teams)
         else:
-            process_sale(auction, players, teams, winning_team=team.id, sale_price=1)
+            process_sale(auction, players, teams, winning_team=team.id, sale_price=player_base_price(current))
     else:
         raise AssertionError("Did not reach the forced-unsold player within 100 attempts")
 
@@ -672,7 +681,7 @@ def test_all_28_queued_players_can_be_resolved_exactly_once() -> None:
     auction, players, teams = build_state(seed=42)
     assert len(auction.queue) == 28
 
-    resolve_whole_queue(auction, players, teams, sale_price=1)
+    resolve_whole_queue(auction, players, teams)
 
     assert auction.is_complete is True
     assert auction.status == AuctionStatus.COMPLETE

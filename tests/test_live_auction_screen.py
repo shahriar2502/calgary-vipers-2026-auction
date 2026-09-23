@@ -12,12 +12,15 @@ assert on requested/rendered geometry and on locating the actual button
 widgets, never on exact pixel positions.
 """
 
+import socket
+import time
 from pathlib import Path
 
 import customtkinter as ctk
 import pytest
 
 from models.auction import AuctionStatus
+from models.player import Position, player_base_price
 from services.auction_service import AuctionTransactionError, team_can_bid_for_player
 from services.auction_session_service import AuctionSession
 
@@ -26,6 +29,64 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def team_by_name(teams, name: str):
     return next(team for team in teams if team.name == name)
+
+
+def _free_port() -> int:
+    """A genuinely free ephemeral port, discovered by binding to port 0
+    and letting the OS pick — used instead of a hardcoded literal for
+    every real `CaptainBiddingServer` this file starts, so two tests can
+    never race over the same port even under full-suite load (a fixed
+    port number, reused across many tests in one file, previously showed
+    rare port-reuse timing flakiness under heavy load)."""
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    probe.bind(("127.0.0.1", 0))
+    port = probe.getsockname()[1]
+    probe.close()
+    return port
+
+
+def _wait_for_state_change(server, timeout: float) -> None:
+    from services.captain_bidding_server import ServerLifecycleState
+
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if server.state != ServerLifecycleState.STARTING:
+            return
+        time.sleep(0.02)
+
+
+def wait_until_running(server, timeout: float = 25.0) -> None:
+    """`CaptainBiddingServer.start()` is non-blocking (RC1 stabilization
+    ticket) — it returns immediately with `state == STARTING`. Tests that
+    need the server actually up (to build a screen that reads
+    `is_running`/`lan_url`, or to make a real HTTP call) poll for it here.
+
+    `timeout` is deliberately set above `CaptainBiddingServer`'s own
+    ~10s bulletproof startup timeout (RC2 targeted debug pass) so this
+    reliably observes the *true* final state (RUNNING or a clean FAILED)
+    instead of a misleading "still STARTING" read taken too early.
+
+    Retries once on FAILED: a real, reproducible (if rare) startup stall
+    was found in this exact test suite — the *first* captain-bidding
+    server started in a process that had already built and torn down
+    many CustomTkinter dialogs can occasionally take longer than the
+    startup budget to bootstrap its event loop, confirmed via the
+    fine-grained SERVER_THREAD_* trace log added for this ticket. A
+    second `start()` attempt was empirically observed to succeed
+    immediately every time in that same reproduction (once the stuck
+    daemon thread is abandoned) — this mirrors the exact recovery
+    guidance given to the real organizer (retry once), applied here so
+    this rare, understood timing issue doesn't make the test suite itself
+    flaky for something the production code already recovers from."""
+    from services.captain_bidding_server import ServerLifecycleState
+
+    _wait_for_state_change(server, timeout)
+    if server.state == ServerLifecycleState.FAILED:
+        server.start()
+        _wait_for_state_change(server, timeout)
+    assert server.state == ServerLifecycleState.RUNNING, (
+        f"expected RUNNING, got {server.state} (last_error={server.last_error!r})"
+    )
 
 
 def _find_widgets_by_text(widget, text: str) -> list:
@@ -72,13 +133,15 @@ def start_with_seed(screen, seed: int) -> None:
     screen._render()
 
 
-def resolve_whole_screen(screen, sale_price: int = 1) -> None:
+def resolve_whole_screen(screen) -> None:
     """Drive the screen's session to COMPLETE or BLOCKED via its own
     _execute_sale/_execute_unsold callbacks (the same seam a real SOLD/
     UNSOLD confirm click uses), picking the currently-eligible team with
     the fewest players so far each time — see the identical helper in
     tests/test_auction_service.py for why naive round-robin can
-    legitimately hit a GK conflict instead."""
+    legitimately hit a GK conflict instead. Always sells at the current
+    player's own base price (First Auction Rules V2: GK/non-GK base
+    prices are no longer both satisfied by one flat price)."""
     for _ in range(500):
         session = screen._session
         if session.auction.status in (AuctionStatus.COMPLETE, AuctionStatus.BLOCKED):
@@ -89,7 +152,7 @@ def resolve_whole_screen(screen, sale_price: int = 1) -> None:
             screen._execute_unsold()
         else:
             team = min(eligible, key=lambda team: team.roster_size)
-            screen._execute_sale(team.id, sale_price)
+            screen._execute_sale(team.id, player_base_price(current))
     raise AssertionError("resolve_whole_screen did not reach COMPLETE/BLOCKED within 500 attempts")
 
 
@@ -540,7 +603,7 @@ def test_rizvi_shows_fpl_111(screen, session) -> None:
 
 def test_munem_shows_fpl_na(screen, session) -> None:
     start_with_seed(screen, seed=1)
-    _force_current_player_by_name(session, "Munem")
+    _force_current_player_by_name(session, "Munem Morshed")
     screen._render()
     assert _find_widgets_by_text(screen, "FPL N/A")
 
@@ -554,7 +617,7 @@ def test_masrur_shows_fpl_na(screen, session) -> None:
 
 def test_none_fpl_never_rendered_as_zero(screen, session) -> None:
     start_with_seed(screen, seed=1)
-    _force_current_player_by_name(session, "Munem")
+    _force_current_player_by_name(session, "Munem Morshed")
     screen._render()
     assert not _find_widgets_by_text(screen, "FPL 0")
     assert _find_widgets_by_text(screen, "FPL N/A")
@@ -572,7 +635,7 @@ def test_real_zero_fpl_would_render_as_zero(screen, session) -> None:
 
 def test_advancing_player_updates_fpl_value(screen, session) -> None:
     start_with_seed(screen, seed=1)
-    _force_current_player_by_name(session, "Munem")
+    _force_current_player_by_name(session, "Munem Morshed")
     screen._render()
     assert _find_widgets_by_text(screen, "FPL N/A")
 
@@ -586,11 +649,11 @@ def test_advancing_player_updates_fpl_value(screen, session) -> None:
 
 def test_advancing_player_updates_photo_name_ovr_position_together(screen, session) -> None:
     start_with_seed(screen, seed=1)
-    _force_current_player_by_name(session, "Munem")
+    _force_current_player_by_name(session, "Munem Morshed")
     screen._render()
-    assert _find_widgets_by_text(screen, "MUNEM")
+    assert _find_widgets_by_text(screen, "MUNEM MORSHED")
     assert _find_widgets_by_text(screen, "89")
-    assert _find_widgets_by_text(screen, "MID")
+    assert _find_widgets_by_text(screen, "ATT")
 
     team = team_by_name(session.teams, "Blackout FC")
     screen._execute_sale(team.id, 5)
@@ -599,7 +662,7 @@ def test_advancing_player_updates_photo_name_ovr_position_together(screen, sessi
     assert _find_widgets_by_text(screen, "RIZVI IBRAHIM")
     assert _find_widgets_by_text(screen, "90")
     assert _find_widgets_by_text(screen, "DEF")
-    assert not _find_widgets_by_text(screen, "MUNEM")
+    assert not _find_widgets_by_text(screen, "MUNEM MORSHED")
 
 
 def test_stale_card_art_reference_replaced_safely(screen, session) -> None:
@@ -676,9 +739,12 @@ def test_unsold_still_functions_with_new_card(screen, session) -> None:
 
 def test_max_legal_bid_display_remains_correct_with_new_card(screen, session) -> None:
     start_with_seed(screen, seed=1)
-    # Team buttons render multi-line text ("Team\nBudget\n...\nMax 94M"),
-    # so this needs a substring search, not an exact-text match.
-    assert _find_widget_containing_text(screen, "Max 94M") is not None
+    # Team buttons render multi-line text ("Team\nBudget\n...\nMax 88M"),
+    # so this needs a substring search, not an exact-text match. Seed 1's
+    # first current player is a GK (Jawad); a fresh, GK-less team's max
+    # legal bid on a GK is 88M (First Auction Rules V2 — see
+    # PROJECT_CONTEXT.md's worked "Example B").
+    assert _find_widget_containing_text(screen, "Max 88M") is not None
 
 
 # ============================================================
@@ -688,26 +754,26 @@ def test_max_legal_bid_display_remains_correct_with_new_card(screen, session) ->
 
 def test_final_transaction_produces_auction_complete_state(screen) -> None:
     start_with_seed(screen, seed=1)
-    resolve_whole_screen(screen, sale_price=1)
+    resolve_whole_screen(screen)
     assert screen._session.is_complete is True
 
 
 def test_no_next_player_shown_after_completion(screen) -> None:
     start_with_seed(screen, seed=1)
-    resolve_whole_screen(screen, sale_price=1)
+    resolve_whole_screen(screen)
     assert screen._session.current_player is None
 
 
 def test_sold_and_unsold_buttons_disappear_after_completion(screen) -> None:
     start_with_seed(screen, seed=1)
-    resolve_whole_screen(screen, sale_price=1)
+    resolve_whole_screen(screen)
     assert _find_widgets_by_text(screen, "SOLD") == []
     assert _find_widgets_by_text(screen, "UNSOLD") == []
 
 
 def test_no_transaction_allowed_after_completion(screen) -> None:
     start_with_seed(screen, seed=1)
-    resolve_whole_screen(screen, sale_price=1)
+    resolve_whole_screen(screen)
     with pytest.raises(AuctionTransactionError, match="already complete"):
         screen._session.sell_current_player(winning_team=screen._session.teams[0].id, sale_price=1)
     with pytest.raises(AuctionTransactionError, match="already complete"):
@@ -716,10 +782,13 @@ def test_no_transaction_allowed_after_completion(screen) -> None:
 
 def test_final_team_values_remain_visible_after_completion(screen) -> None:
     start_with_seed(screen, seed=1)
-    resolve_whole_screen(screen, sale_price=1)
+    resolve_whole_screen(screen)
     for team in screen._session.teams:
         assert team.roster_size == 8
-        assert team.remaining_budget == 93  # 100 - (7 purchases x 1M)
+        # First Auction Rules V2: every team's final squad is exactly its
+        # mandatory 1 GK + 6 non-GK purchases (resolve_whole_screen sells
+        # each player at its own base price) -> 4M + 6x2M = 16M spent.
+        assert team.remaining_budget == 84
 
 
 def test_sold_unsold_totals_match_history(screen) -> None:
@@ -729,7 +798,7 @@ def test_sold_unsold_totals_match_history(screen) -> None:
         if index % 2 == 0:
             eligible = [t for t in screen._session.teams if team_can_bid_for_player(t, current, screen._session.players)]
             team = min(eligible, key=lambda t: t.roster_size)
-            screen._execute_sale(team.id, 1)
+            screen._execute_sale(team.id, player_base_price(current))
         else:
             screen._execute_unsold()
 
@@ -1146,17 +1215,23 @@ def test_live_auction_server_status_displays_off_by_default(screen) -> None:
     assert _find_widget_containing_text(screen, "CAPTAIN BIDDING: OFF") is not None
 
 
-def test_live_auction_server_status_displays_running(hidden_root, session) -> None:
+def test_live_auction_server_status_displays_running(hidden_root, session, tmp_path) -> None:
+    from services.captain_auth_service import CaptainAuthService
     from services.captain_bidding_server import CaptainBiddingServer
     from ui.screens.live_auction_screen import LiveAuctionScreen
 
-    hidden_root.captain_bidding_server = CaptainBiddingServer(session, host="127.0.0.1", port=18790)
+    auth = CaptainAuthService(config_path=tmp_path / "captain_bidding.json")
+    hidden_root.captain_bidding_server = CaptainBiddingServer(
+        session, host="127.0.0.1", port=_free_port(), auth=auth
+    )
     hidden_root.captain_bidding_server.start()
+    wait_until_running(hidden_root.captain_bidding_server)
     try:
         session.start(seed=1)
         built = LiveAuctionScreen(hidden_root, session)
         try:
             assert _find_widget_containing_text(built, "CAPTAIN BIDDING: RUNNING") is not None
+            assert _find_widget_containing_text(built, "0 / 4 ACTIVE") is not None
         finally:
             built.destroy()
     finally:
@@ -1177,18 +1252,22 @@ def test_desktop_bid_accepted(screen) -> None:
 
 
 def test_desktop_bid_increments_from_current_bid(screen) -> None:
-    """+1/+2/+5 add to the current live bid, matching the ticket's exact
-    example (current 7M, +5 -> 12M) — never to some other base."""
+    """+1/+2/+5 add to the current live bid once one exists; before any
+    bid exists, First Auction Rules V2 submits max(base_price, increment)
+    instead of the raw increment alone (see PROJECT_CONTEXT.md's "FIRST
+    AUCTION RULES V2" — a +1M tap on a 4M-base goalkeeper must submit a
+    legal 4M bid, never a rejected 1M one)."""
     screen._on_start_auction_clicked()
+    screen._session.current_player.position = Position.DEF  # base price 2M, deterministic
     blackout = team_by_name(screen._session.teams, "Blackout FC")
     screen._on_team_selected(blackout.id)
 
-    screen._on_desktop_bid_clicked(1)
-    assert screen._session.auction.current_bid == 1
+    screen._on_desktop_bid_clicked(1)  # no bid yet -> max(2, 1) = 2
+    assert screen._session.auction.current_bid == 2
     screen._on_desktop_bid_clicked(2)
-    assert screen._session.auction.current_bid == 3
+    assert screen._session.auction.current_bid == 4
     screen._on_desktop_bid_clicked(5)
-    assert screen._session.auction.current_bid == 8
+    assert screen._session.auction.current_bid == 9
 
 
 def test_desktop_bid_uses_same_bid_service_as_direct_call(screen) -> None:
@@ -1235,7 +1314,8 @@ def test_phone_bid_visible_on_live_auction(screen) -> None:
     assert screen._session.leading_team.name == "Blackout FC"
 
 
-def test_desktop_bid_visible_through_state_endpoint() -> None:
+def test_desktop_bid_visible_through_state_endpoint(tmp_path) -> None:
+    from services.captain_auth_service import CaptainAuthService
     from services.captain_bidding_server import CaptainBiddingServer
 
     session = AuctionSession()
@@ -1247,13 +1327,24 @@ def test_desktop_bid_visible_through_state_endpoint() -> None:
     # _on_desktop_bid_clicked does, via AuctionSession.place_live_bid.
     session.place_live_bid(blackout.id, 7)
 
-    server = CaptainBiddingServer(session)
+    auth = CaptainAuthService(config_path=tmp_path / "captain_bidding.json")
+    server = CaptainBiddingServer(session, auth=auth)
     from fastapi.testclient import TestClient
 
-    client = TestClient(server.app)
-    data = client.get("/api/state").json()
+    # `with`-managed: an unmanaged TestClient lazily starts a background
+    # anyio portal thread that is only guaranteed closed on `__exit__` —
+    # see the identical fix (and full explanation) in
+    # tests/test_captain_bidding_server.py's `client` fixture, applied
+    # here to a usage that fix missed at the time.
+    with TestClient(server.app) as client:
+        # current_bid/leading_team_name are public, projector-equivalent
+        # auction state — visible with no captain login at all, unlike a
+        # team's own budget/roster (see own_team, which requires auth).
+        data = client.get("/api/state").json()
     assert data["current_bid"] == 7
     assert data["leading_team_name"] == "Blackout FC"
+    assert data["authenticated"] is False
+    assert data["own_team"] is None
 
 
 def test_sold_prefills_leading_team_and_current_bid(screen) -> None:
@@ -1328,8 +1419,9 @@ def test_no_stale_leader_after_advancement(screen) -> None:
 
     # And a fresh, unrelated bid on the new player must not be compared
     # against the old (already-cleared) 20M.
+    screen._session.current_player.position = Position.DEF  # base price 2M, deterministic
     blackout = team_by_name(screen._session.teams, "Blackout FC")
-    result = screen._session.place_live_bid(blackout.id, 1)
+    result = screen._session.place_live_bid(blackout.id, 2)
     assert result.accepted is True
 
 
@@ -1342,6 +1434,160 @@ def test_normal_manual_auction_works_with_server_off(screen) -> None:
     screen._execute_sale(team.id, 10)
     assert screen._session.last_result.outcome == "SOLD"
     assert team.remaining_budget == 90
+
+
+# ============================================================
+# CAPTAIN PHONE BIDDING — PHASE 2 (September 2026): mixed-mode
+# desktop/phone bidding with PIN-authenticated captains — see
+# services/captain_auth_service.py.
+# ============================================================
+
+
+@pytest.fixture
+def running_captain_server(hidden_root, session, tmp_path):
+    """A real, running CaptainBiddingServer + isolated CaptainAuthService
+    attached to hidden_root, matching the pattern LiveAuctionScreen reads
+    via `getattr(self.winfo_toplevel(), "captain_bidding_server", None)`."""
+    from services.captain_auth_service import CaptainAuthService
+    from services.captain_bidding_server import CaptainBiddingServer
+
+    auth = CaptainAuthService(config_path=tmp_path / "captain_bidding.json")
+    server = CaptainBiddingServer(session, host="127.0.0.1", port=_free_port(), auth=auth)
+    server.start()
+    wait_until_running(server)
+    hidden_root.captain_bidding_server = server
+    yield server
+    server.stop()
+    del hidden_root.captain_bidding_server
+
+
+def test_phone_connected_indicator_shown_for_connected_team(hidden_root, session, running_captain_server) -> None:
+    from ui.screens.live_auction_screen import LiveAuctionScreen
+
+    session.start(seed=1)
+    blackout = team_by_name(session.teams, "Blackout FC")
+    _, pin = next((tid, p) for tid, p in running_captain_server.auth.get_pins().items() if tid == blackout.id)
+    running_captain_server.auth.login(pin)
+
+    built = LiveAuctionScreen(hidden_root, session)
+    try:
+        assert _find_widget_containing_text(built, "PHONE CONNECTED") is not None
+    finally:
+        built.destroy()
+
+
+def test_no_phone_connected_indicator_when_nobody_logged_in(hidden_root, session, running_captain_server) -> None:
+    from ui.screens.live_auction_screen import LiveAuctionScreen
+
+    session.start(seed=1)
+    built = LiveAuctionScreen(hidden_root, session)
+    try:
+        assert _find_widget_containing_text(built, "PHONE CONNECTED") is None
+    finally:
+        built.destroy()
+
+
+def test_projector_line_shows_active_connection_count(hidden_root, session, running_captain_server) -> None:
+    from ui.screens.live_auction_screen import LiveAuctionScreen
+
+    session.start(seed=1)
+    blackout = team_by_name(session.teams, "Blackout FC")
+    darkstar = team_by_name(session.teams, "Darkstar FC")
+    running_captain_server.auth.login(running_captain_server.auth.get_pin(blackout.id))
+    running_captain_server.auth.login(running_captain_server.auth.get_pin(darkstar.id))
+
+    built = LiveAuctionScreen(hidden_root, session)
+    try:
+        assert _find_widget_containing_text(built, "2 / 4 ACTIVE") is not None
+    finally:
+        built.destroy()
+
+
+def test_desktop_can_bid_for_a_connected_phone_team(hidden_root, session, running_captain_server) -> None:
+    """Mixed mode: connecting a captain phone never removes the
+    organizer's own manual bidding controls for that same team."""
+    from ui.screens.live_auction_screen import LiveAuctionScreen
+
+    session.start(seed=1)
+    session.current_player.position = Position.DEF  # base price 2M, deterministic
+    blackout = team_by_name(session.teams, "Blackout FC")
+    running_captain_server.auth.login(running_captain_server.auth.get_pin(blackout.id))
+
+    built = LiveAuctionScreen(hidden_root, session)
+    try:
+        built._on_team_selected(blackout.id)
+        built._on_desktop_bid_clicked(3)
+        assert session.auction.current_bid == 3
+        assert session.auction.leading_team_id == blackout.id
+    finally:
+        built.destroy()
+
+
+def test_desktop_can_bid_for_a_disconnected_team(hidden_root, session, running_captain_server) -> None:
+    """No captain has ever logged in for Darkstar — the organizer must
+    still be able to bid manually on Darkstar's behalf."""
+    from ui.screens.live_auction_screen import LiveAuctionScreen
+
+    session.start(seed=1)
+    session.current_player.position = Position.DEF  # base price 2M, deterministic
+    darkstar = team_by_name(session.teams, "Darkstar FC")
+
+    built = LiveAuctionScreen(hidden_root, session)
+    try:
+        built._on_team_selected(darkstar.id)
+        built._on_desktop_bid_clicked(2)
+        assert session.auction.current_bid == 2
+        assert session.auction.leading_team_id == darkstar.id
+    finally:
+        built.destroy()
+
+
+def test_one_captain_disconnect_does_not_block_other_teams_or_desktop(hidden_root, session, running_captain_server) -> None:
+    from ui.screens.live_auction_screen import LiveAuctionScreen
+
+    session.start(seed=1)
+    blackout = team_by_name(session.teams, "Blackout FC")
+    darkstar = team_by_name(session.teams, "Darkstar FC")
+    goli = team_by_name(session.teams, "Goli Underdogs")
+
+    running_captain_server.auth.login(running_captain_server.auth.get_pin(blackout.id))
+    running_captain_server.auth.login(running_captain_server.auth.get_pin(darkstar.id))
+    # Blackout's captain "disconnects" — reset by the organizer.
+    running_captain_server.auth.reset_team_session(blackout.id)
+
+    # Darkstar's phone can still bid.
+    darkstar_result = session.place_live_bid(darkstar.id, 4)
+    assert darkstar_result.accepted is True
+
+    # The organizer can still bid manually for the now-disconnected
+    # Blackout, and for Goli, which never had a phone at all.
+    built = LiveAuctionScreen(hidden_root, session)
+    try:
+        built._on_team_selected(goli.id)
+        built._on_desktop_bid_clicked(6)  # increments from Darkstar's 4M -> 10M
+        assert session.auction.current_bid == 10
+        assert session.auction.leading_team_id == goli.id
+    finally:
+        built.destroy()
+
+
+def test_zero_phones_connected_desktop_still_works(hidden_root, session, running_captain_server) -> None:
+    """0 connected phones is an explicitly supported cardinality —
+    everything runs exactly as the pre-Captain-Bidding manual flow."""
+    from ui.screens.live_auction_screen import LiveAuctionScreen
+
+    session.start(seed=1)
+    session.current_player.position = Position.DEF  # base price 2M, deterministic
+    team = team_by_name(session.teams, "Showstoppers")
+
+    built = LiveAuctionScreen(hidden_root, session)
+    try:
+        built._on_team_selected(team.id)
+        built._on_desktop_bid_clicked(1)
+        assert session.auction.current_bid == 2  # First Auction Rules V2: max(base_price, increment)
+        assert running_captain_server.auth.connected_count() == 0
+    finally:
+        built.destroy()
 
 
 # ============================================================
@@ -1463,7 +1709,7 @@ def test_completion_screen_not_shown_while_unsold_players_remain(screen) -> None
 
 def test_completion_screen_appears_after_every_player_sold(screen) -> None:
     start_with_seed(screen, seed=1)
-    resolve_whole_screen(screen, sale_price=1)
+    resolve_whole_screen(screen)
     assert screen._session.is_complete is True
     assert _find_widget_containing_text(screen, "AUCTION COMPLETE") is not None
 

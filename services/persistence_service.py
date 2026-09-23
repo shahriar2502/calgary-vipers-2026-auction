@@ -6,9 +6,10 @@ files or JSON — it only calls an injected `autosave` hook, which
 `ui/main_window.py` wires to `autosave_hook` below. Screens never read or
 write save files directly.
 
-Save files live under `saves/` (a sibling of `data/` and `assets/`, using
-the same `ROOT_DIR`-relative pattern as the rest of the app so paths work
-whether run via `python main.py` or a later packaged build):
+Save files live under `saves/`, resolved via `services.runtime_paths
+.WRITABLE_ROOT` (the repository root in source mode; the folder
+containing the .exe in a packaged build — see that module) so paths
+work identically whether run via `python main.py` or a packaged build:
 
     saves/
       mocks/
@@ -46,14 +47,18 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from models.auction import Auction
+from models.match_result import MatchResult
 from models.player import Player
 from models.team import Team
 from services.auction_session_service import AuctionSession, SessionMode
-from services.config_service import ROOT_DIR
+from services.runtime_paths import WRITABLE_ROOT
 
 SCHEMA_VERSION = 1
 
-SAVES_DIR = ROOT_DIR / "saves"
+# Writable runtime state — must live beside the running app (the .exe's
+# own folder when packaged), never inside PyInstaller's read-only bundle
+# directory. See services/runtime_paths.py.
+SAVES_DIR = WRITABLE_ROOT / "saves"
 MOCKS_DIR = SAVES_DIR / "mocks"
 LIVE_DIR = SAVES_DIR / "live"
 LIVE_ACTIVE_PATH = LIVE_DIR / "live_active.json"
@@ -156,6 +161,14 @@ def build_snapshot(session: AuctionSession, updated_at: str) -> dict:
         "players": [player.to_dict() for player in session.players],
         "teams": [team.to_dict() for team in session.teams],
         "auction": session.auction.to_dict(),
+        # Post-auction (September 2026): additive, optional key — an older
+        # save file written before this feature existed simply has no
+        # "match_results" key at all, and `restore_session` below treats
+        # that identically to an explicit empty list. No schema_version
+        # bump needed, matching how `Player.last_season_fpl_points` was
+        # added earlier (see PROJECT_CONTEXT.md's "POST-AUCTION MATCH
+        # RESULTS + TRANSFER BUDGET TRACKER").
+        "match_results": [result.to_dict() for result in session.match_results],
     }
 
 
@@ -286,6 +299,26 @@ def _validate_cross_references(players: list[Player], teams: list[Team], auction
             raise PersistenceError(f"Save file is corrupt: history entry references unknown team {entry.team!r}.")
 
 
+def _reconstruct_match_results(data: dict) -> list[MatchResult]:
+    """Best-effort, never-raising: post-auction match data is deliberately
+    independent of the core auction snapshot (see PROJECT_CONTEXT.md's
+    "POST-AUCTION MATCH RESULTS + TRANSFER BUDGET TRACKER" — "if the
+    tracker cannot initialize or encounters invalid data, the existing
+    auction must still be usable"). A missing key (every pre-existing
+    save file), a non-list value, or one malformed record falls back to
+    an empty list rather than ever failing the whole session load."""
+    raw = data.get("match_results")
+    if not isinstance(raw, list):
+        return []
+    results = []
+    for item in raw:
+        try:
+            results.append(MatchResult.from_dict(item))
+        except (TypeError, ValueError, KeyError):
+            continue
+    return results
+
+
 def restore_session(data: dict) -> AuctionSession:
     """Validate `data` (structurally, per-model, and cross-referentially)
     and reconstruct an `AuctionSession` equivalent to a freshly-created
@@ -299,6 +332,7 @@ def restore_session(data: dict) -> AuctionSession:
         auction=auction,
         players=players,
         teams=teams,
+        match_results=_reconstruct_match_results(data),
         mode=SessionMode(data["session_mode"]),
         session_id=data["session_id"],
         name=data.get("name"),

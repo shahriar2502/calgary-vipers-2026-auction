@@ -1,0 +1,5 @@
+# Windows packaging (RC0) -- build-time only. Not needed to run the app
+# from source (python main.py) or to run the test suite; install these
+# only when producing a packaged .exe via build_windows.bat.
+# See PROJECT_CONTEXT.md's "Windows Packaging -- RC0".
+pyinstaller==6.22.2

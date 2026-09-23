@@ -308,7 +308,7 @@ def test_expanded_player_detail_opens(screen) -> None:
 
 
 def test_expanded_view_shows_na_for_missing_fpl(screen) -> None:
-    player = next(p for p in screen._players if p.full_name == "Munem")
+    player = next(p for p in screen._players if p.full_name == "Munem Morshed")
     screen._open_detail(player)
     assert _find_widget_containing_text(screen, "LAST SEASON FPL: N/A") is not None
 

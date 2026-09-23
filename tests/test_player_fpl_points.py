@@ -21,7 +21,6 @@ EXPECTED_FPL_POINTS = {
     "Ishmam Rahman": 65,
     "Md Rafiu Hossain": 50,
     "Hasan Mahtab": 74,
-    "Minhaz Hamim": 79,
     "Nabil Shahriar": 42,
     "Adeeb Ahmed": 70,
     "Arafatul Mamur": 42,
@@ -32,21 +31,22 @@ EXPECTED_FPL_POINTS = {
     "Fairooz Abir": 76,
     "Riyad Zaman": 62,
     "Faiad Rehman": 74,
-    "Azmi": 64,
-    "Mubasshir": 57,
+    "Azmi Hoque": 64,
+    "Mubasshir Rahman": 57,
     "Taqi Rahman": 37,
+    "Shadman Sakib": 52,
+    "Rhishik Roy": 62,
 }
 
 NO_LAST_SEASON_DATA = {
     "Hussain Yeasin",
     "Masrur Rahman",
-    "Sajid Khalid",
+    "Mirza Mohammed",
     "Rayhan",
-    "Munem",
+    "Munem Morshed",
     "Farhan Labib",
     "Jawad",
     "Hasnan Siddique Sunve",
-    "Farhan Mahin",
     "Tahsin Islam",
 }
 
@@ -98,7 +98,7 @@ def test_missing_data_player_is_none_not_zero(full_name: str) -> None:
     assert points != 0
 
 
-def test_all_ten_no_data_players_have_none() -> None:
+def test_all_no_data_players_have_none() -> None:
     by_name = _by_name()
     for full_name in NO_LAST_SEASON_DATA:
         assert by_name[full_name].last_season_fpl_points is None

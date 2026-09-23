@@ -23,9 +23,11 @@ import os
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from services.config_service import ROOT_DIR
+from services.runtime_paths import WRITABLE_ROOT
 
-PREFERENCES_PATH = ROOT_DIR / "config" / "user_preferences.json"
+# Writable runtime state — beside the .exe when packaged, never inside
+# PyInstaller's read-only bundle directory. See services/runtime_paths.py.
+PREFERENCES_PATH = WRITABLE_ROOT / "config" / "user_preferences.json"
 
 
 @dataclass(frozen=True, slots=True)

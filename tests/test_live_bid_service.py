@@ -9,11 +9,12 @@ import threading
 import pytest
 
 from models.auction import AuctionStatus
-from models.player import Player, Position
+from models.player import Player, Position, player_base_price
 from models.team import Team
 from services import live_bid_service as lbs
 from services.auction_service import (
     get_current_player,
+    maximum_legal_bid,
     process_sale,
     process_unsold,
     team_can_bid_for_player,
@@ -27,6 +28,18 @@ def build_state(seed: int = 1):
     teams = load_teams()
     auction = create_auction(players, seed=seed)
     return auction, players, teams
+
+
+def force_current_player_non_gk(auction, players: list[Player]) -> Player:
+    """First Auction Rules V2 gave GK/non-GK players different base
+    prices, so many of these tests need a deterministic, known position
+    for the current player rather than whatever a given seed's queue
+    happens to put first — mutating `.position` directly (same pattern
+    already used by `test_gk_conflict_rejected` below) is simpler and
+    more direct than re-seeding until the desired position comes up."""
+    current = get_current_player(auction, players)
+    current.position = Position.DEF
+    return current
 
 
 def team_by_name(teams: list[Team], name: str) -> Team:
@@ -64,17 +77,29 @@ def test_invalid_team_rejects() -> None:
 # ============================================================
 
 
-def test_valid_initial_1m_bid_accepted() -> None:
+def test_valid_initial_base_price_bid_accepted() -> None:
     auction, players, teams = build_state()
-    result = lbs.place_bid(auction, players, teams, "Blackout FC", 1)
+    current = force_current_player_non_gk(auction, players)
+    base_price = player_base_price(current)
+    result = lbs.place_bid(auction, players, teams, "Blackout FC", base_price)
     assert result.accepted is True
-    assert result.current_bid == 1
+    assert result.current_bid == base_price
     blackout = team_by_name(teams, "Blackout FC")
     assert result.leading_team_id == blackout.id
 
 
+def test_initial_bid_below_base_price_rejected() -> None:
+    auction, players, teams = build_state()
+    current = force_current_player_non_gk(auction, players)
+    base_price = player_base_price(current)
+    result = lbs.place_bid(auction, players, teams, "Blackout FC", base_price - 1)
+    assert result.accepted is False
+    assert f"at least {base_price}M" in result.reason
+
+
 def test_bid_must_exceed_current_bid() -> None:
     auction, players, teams = build_state()
+    force_current_player_non_gk(auction, players)
     lbs.place_bid(auction, players, teams, "Blackout FC", 5)
     result = lbs.place_bid(auction, players, teams, "Darkstar FC", 5)
     assert result.accepted is False
@@ -83,6 +108,7 @@ def test_bid_must_exceed_current_bid() -> None:
 
 def test_equal_bid_rejected() -> None:
     auction, players, teams = build_state()
+    force_current_player_non_gk(auction, players)
     lbs.place_bid(auction, players, teams, "Blackout FC", 5)
     result = lbs.place_bid(auction, players, teams, "Blackout FC", 5)
     assert result.accepted is False
@@ -95,6 +121,7 @@ def test_equal_bid_rejected() -> None:
 
 def test_plus_1_increment_from_current_bid() -> None:
     auction, players, teams = build_state()
+    force_current_player_non_gk(auction, players)
     lbs.place_bid(auction, players, teams, "Blackout FC", 7)
     result = lbs.place_bid(auction, players, teams, "Darkstar FC", auction.current_bid + 1)
     assert result.accepted is True
@@ -103,6 +130,7 @@ def test_plus_1_increment_from_current_bid() -> None:
 
 def test_plus_2_increment_from_current_bid() -> None:
     auction, players, teams = build_state()
+    force_current_player_non_gk(auction, players)
     lbs.place_bid(auction, players, teams, "Blackout FC", 7)
     result = lbs.place_bid(auction, players, teams, "Darkstar FC", auction.current_bid + 2)
     assert result.accepted is True
@@ -111,6 +139,7 @@ def test_plus_2_increment_from_current_bid() -> None:
 
 def test_plus_5_increment_from_current_bid() -> None:
     auction, players, teams = build_state()
+    force_current_player_non_gk(auction, players)
     lbs.place_bid(auction, players, teams, "Blackout FC", 7)
     result = lbs.place_bid(auction, players, teams, "Darkstar FC", auction.current_bid + 5)
     assert result.accepted is True
@@ -121,14 +150,20 @@ def test_increment_rejected_when_it_would_exceed_max_legal_bid() -> None:
     """Current bid 7M, team's max legal bid is 10M: a +5 (-> 12M) must be
     rejected outright, never silently clamped to 10M."""
     auction, players, teams = build_state()
+    current = force_current_player_non_gk(auction, players)
     blackout = team_by_name(teams, "Blackout FC")
-    # Fill Blackout's roster to 7/8 so its reserve-adjusted max legal bid
-    # is small and easy to reason about (no reserve needed for the last slot).
-    blackout.roster.extend(range(901, 907))
+    # Fill Blackout's roster to 7/8 (already has a real GK on it, so the
+    # reserve for this non-GK current player only needs a plain budget
+    # check, not a GK-shaped one) so its max legal bid is small and easy
+    # to reason about (no reserve needed for the last slot).
+    gk_on_roster = Player(id=800, full_name="Existing GK", short_name="GK1", position=Position.GK, overall_rating=80)
+    players.append(gk_on_roster)
+    blackout.roster.append(gk_on_roster.id)
+    blackout.roster.extend(range(901, 906))
     blackout.remaining_budget = 10
     blackout.auction_spending = 90
     blackout.players_purchased = 6
-    assert blackout.maximum_legal_bid == 10
+    assert maximum_legal_bid(blackout, current, players) == 10
 
     lbs.place_bid(auction, players, teams, "Darkstar FC", 7)
     result = lbs.place_bid(auction, players, teams, "Blackout FC", auction.current_bid + 5)
@@ -144,6 +179,7 @@ def test_increment_rejected_when_it_would_exceed_max_legal_bid() -> None:
 
 def test_max_legal_bid_enforced() -> None:
     auction, players, teams = build_state()
+    force_current_player_non_gk(auction, players)
     blackout = team_by_name(teams, "Blackout FC")
     blackout.remaining_budget = 3
     blackout.auction_spending = 97
@@ -151,21 +187,26 @@ def test_max_legal_bid_enforced() -> None:
     assert result.accepted is False
 
 
-def test_budget_reserve_enforced() -> None:
-    """A team with 5/8 roster and only 3M left can legally bid at most 1M
-    (2M must stay reserved for its 2 remaining slots) — see PROJECT_CONTEXT
-    .md's PRE-M9 BUDGET RESERVE RULE."""
+def test_dynamic_completion_reserve_enforced() -> None:
+    """A team with 5/8 roster (already owns its mandatory GK) and only 6M
+    left can legally bid at most 2M on a non-GK player (2M x 2 remaining
+    slots must stay reserved) — see PROJECT_CONTEXT.md's "FIRST AUCTION
+    RULES V2"."""
     auction, players, teams = build_state()
+    current = force_current_player_non_gk(auction, players)
     blackout = team_by_name(teams, "Blackout FC")
-    blackout.roster.extend([901, 902, 903, 904])
-    blackout.remaining_budget = 3
-    blackout.auction_spending = 97
+    gk_on_roster = Player(id=800, full_name="Existing GK", short_name="GK1", position=Position.GK, overall_rating=80)
+    players.append(gk_on_roster)
+    blackout.roster.append(gk_on_roster.id)
+    blackout.roster.extend([901, 902, 903])
+    blackout.remaining_budget = 6
+    blackout.auction_spending = 94
     blackout.players_purchased = 4
-    assert blackout.maximum_legal_bid == 1
+    assert maximum_legal_bid(blackout, current, players) == 2
 
-    result = lbs.place_bid(auction, players, teams, "Blackout FC", 2)
+    result = lbs.place_bid(auction, players, teams, "Blackout FC", 3)
     assert result.accepted is False
-    accepted = lbs.place_bid(auction, players, teams, "Blackout FC", 1)
+    accepted = lbs.place_bid(auction, players, teams, "Blackout FC", 2)
     assert accepted.accepted is True
 
 
@@ -291,6 +332,7 @@ def test_sold_resets_live_bid_state() -> None:
 
 def test_unsold_resets_live_bid_state() -> None:
     auction, players, teams = build_state()
+    force_current_player_non_gk(auction, players)
     lbs.place_bid(auction, players, teams, "Darkstar FC", 3)
     assert auction.current_bid == 3
 
@@ -302,9 +344,11 @@ def test_unsold_resets_live_bid_state() -> None:
 
 def test_new_bid_after_reset_does_not_see_stale_previous_bid() -> None:
     auction, players, teams = build_state()
+    force_current_player_non_gk(auction, players)
     lbs.place_bid(auction, players, teams, "Blackout FC", 20)
     process_unsold(auction, players, teams)
+    force_current_player_non_gk(auction, players)  # the new current player, whatever its real position
 
-    result = lbs.place_bid(auction, players, teams, "Darkstar FC", 1)
+    result = lbs.place_bid(auction, players, teams, "Darkstar FC", 2)
     assert result.accepted is True
-    assert result.current_bid == 1
+    assert result.current_bid == 2

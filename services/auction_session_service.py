@@ -30,11 +30,12 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 
 from models.auction import Auction, AuctionStatus
+from models.match_result import MatchResult
 from models.player import Player
 from models.team import Team
 from services.auction_service import (
@@ -45,7 +46,9 @@ from services.auction_service import (
     process_unsold,
     sold_player_ids,
 )
+from services import match_result_service
 from services.live_bid_service import BidResult, place_bid
+from services.match_result_service import MatchResultError
 from services.player_service import load_players, load_teams, validate_setup
 from services.randomization_service import create_auction
 
@@ -81,6 +84,12 @@ class AuctionSession:
     players: list[Player] | None = None
     teams: list[Team] | None = None
     last_result: TransactionResult | None = None
+
+    # Post-auction (September 2026): independent of the first-auction
+    # transaction state above — see services/match_result_service.py.
+    # Only ever meaningful once `auction.status == COMPLETE`; the entry
+    # points below enforce that themselves rather than trusting callers.
+    match_results: list[MatchResult] = field(default_factory=list)
 
     # Milestone 9: session identity/metadata, persisted verbatim by
     # services/persistence_service.py — see that module's save-file shape.
@@ -228,6 +237,7 @@ class AuctionSession:
         self.players = other.players
         self.teams = other.teams
         self.last_result = other.last_result
+        self.match_results = other.match_results
         self.mode = other.mode
         self.session_id = other.session_id
         self.name = other.name
@@ -282,6 +292,49 @@ class AuctionSession:
         if result.accepted:
             self._trigger_autosave()
         return result
+
+    # ------------------------------------------------------------------
+    # Post-auction match results (September 2026) — entirely independent
+    # of the first-auction transaction methods above. Never touches
+    # `process_sale`/`process_unsold`/`place_bid`, `Team.remaining_budget`,
+    # or `auction.history`. Gated on the first auction being COMPLETE
+    # (not merely started) — an organizer correction can only ever be
+    # recorded once the tournament's actual final budgets exist.
+    # ------------------------------------------------------------------
+
+    def _require_completed_auction(self) -> None:
+        if self.auction is None:
+            raise MatchResultError("No auction session exists. Start or resume an auction first.")
+        if self.auction.status != AuctionStatus.COMPLETE:
+            raise MatchResultError(
+                "Match-money accounting requires a completed first auction "
+                f"(current status: {self.auction.status.value})."
+            )
+
+    def add_match_result(
+        self, match_number: int, team1_id: int, team2_id: int, team1_goals: int, team2_goals: int
+    ) -> MatchResult:
+        self._require_completed_auction()
+        result = match_result_service.add_match_result(
+            self.match_results, self.teams, match_number, team1_id, team2_id, team1_goals, team2_goals
+        )
+        self._trigger_autosave()
+        return result
+
+    def update_match_result(
+        self, match_id: str, match_number: int, team1_id: int, team2_id: int, team1_goals: int, team2_goals: int
+    ) -> MatchResult:
+        self._require_completed_auction()
+        result = match_result_service.update_match_result(
+            self.match_results, self.teams, match_id, match_number, team1_id, team2_id, team1_goals, team2_goals
+        )
+        self._trigger_autosave()
+        return result
+
+    def delete_match_result(self, match_id: str) -> None:
+        self._require_completed_auction()
+        match_result_service.delete_match_result(self.match_results, match_id)
+        self._trigger_autosave()
 
     def _trigger_autosave(self) -> None:
         """Attempt to persist via the injected `autosave` hook, if any.

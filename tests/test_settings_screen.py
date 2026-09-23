@@ -9,12 +9,28 @@ config/user_preferences.json.
 
 from __future__ import annotations
 
+import time
+
 import customtkinter as ctk
 import pytest
 
 from services import preferences_service as ps
 from services.auction_session_service import AuctionSession, SessionMode
+from services.captain_bidding_server import ServerLifecycleState
 from services.persistence_service import SCHEMA_VERSION
+
+
+def _wait_for_server_state(server, target: ServerLifecycleState, timeout: float = 5.0) -> None:
+    """`CaptainBiddingServer.start()` is non-blocking (RC1 stabilization
+    ticket): it returns immediately with `state == STARTING`. A scripted
+    test (no real Tk `mainloop()` pumping Settings' own `after()`-based
+    poll) waits for the real transition here instead."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if server.state != ServerLifecycleState.STARTING:
+            break
+        time.sleep(0.02)
+    assert server.state == target, f"expected {target}, got {server.state} (last_error={server.last_error!r})"
 
 
 def _find_widget_containing_text(widget, substring: str):
@@ -39,6 +55,8 @@ def _collect_widget_types(widget, types: set) -> None:
 
 @pytest.fixture(autouse=True)
 def isolated_preferences(tmp_path, monkeypatch):
+    # Captain-bidding PIN storage is isolated globally for every test in
+    # the suite by tests/conftest.py's _isolate_captain_pin_storage.
     monkeypatch.setattr(ps, "PREFERENCES_PATH", tmp_path / "user_preferences.json")
     return tmp_path
 
@@ -105,9 +123,11 @@ def test_core_rules_displayed_correctly(hidden_root) -> None:
     try:
         assert _find_widget_containing_text(screen, "LOCKED TOURNAMENT RULES") is not None
         assert _find_widget_containing_text(screen, "Exactly one GK per team") is not None
-        assert _find_widget_containing_text(screen, "1M") is not None
+        assert _find_widget_containing_text(screen, "2M") is not None
+        assert _find_widget_containing_text(screen, "4M") is not None
         assert _find_widget_containing_text(screen, "100M") is not None
         assert _find_widget_containing_text(screen, "Re-auctioned") is not None
+        assert _find_widget_containing_text(screen, "Completion Reserve") is not None
     finally:
         screen.destroy()
 
@@ -422,7 +442,7 @@ def test_captain_bidding_section_displays_off_state_under_bare_root(hidden_root)
     try:
         assert _find_widget_containing_text(screen, "CAPTAIN PHONE BIDDING") is not None
         assert _find_widget_containing_text(screen, "OFF") is not None
-        assert _find_widget_containing_text(screen, "TEST MODE") is not None
+        assert _find_widget_containing_text(screen, "PIN ENABLED") is not None
         assert _find_widget_containing_text(screen, "LAN Address") is not None
     finally:
         screen.destroy()
@@ -507,6 +527,11 @@ def test_settings_start_and_stop_captain_bidding(isolated_preferences) -> None:
 
         assert window.captain_bidding_server.is_running is False
         screen._on_start_captain_bidding_clicked()
+        # start() is non-blocking (RC1 stabilization): wait for the real
+        # transition out of STARTING, then re-render as Settings' own
+        # `after()`-scheduled poll would in a real running mainloop.
+        _wait_for_server_state(window.captain_bidding_server, ServerLifecycleState.RUNNING)
+        screen._render()
         assert window.captain_bidding_server.is_running is True
         assert _find_widget_containing_text(screen, "RUNNING") is not None
         assert _find_widget_containing_text(screen, "http://") is not None
@@ -517,3 +542,211 @@ def test_settings_start_and_stop_captain_bidding(isolated_preferences) -> None:
     finally:
         window.captain_bidding_server.stop()
         window.destroy()
+
+
+# ============================================================
+# CAPTAIN PHONE BIDDING — PHASE 2: PIN MANAGEMENT UI (real MainWindow)
+# ============================================================
+
+
+@pytest.fixture
+def real_window():
+    """One real MainWindow, port-isolated and preferences/PIN-isolated
+    (via the autouse `isolated_preferences` fixture), shared by the Phase
+    2 Settings tests below — kept to a small number of full-MainWindow
+    creations per this file's existing note about Tk-environment
+    flakiness when many real roots are created/destroyed in one process."""
+    tkinter = pytest.importorskip("tkinter")
+    try:
+        from ui.main_window import MainWindow
+
+        window = MainWindow()
+    except tkinter.TclError as exc:
+        pytest.skip(f"No display/Tk backend available for GUI test: {exc}")
+
+    window.withdraw()
+    window.captain_bidding_server.port = 18781
+    window.session.autosave = None
+    window.session.start(seed=1)
+    try:
+        yield window
+    finally:
+        window.captain_bidding_server.stop()
+        window.destroy()
+
+
+def test_settings_pin_management_ui(real_window) -> None:
+    """PIN display, per-team connection status, RESET CONNECTION, and
+    REGENERATE ALL PINS — bundled into one test against one real
+    MainWindow, matching this file's existing note about minimizing
+    full-MainWindow creations to avoid the pre-existing multi-root Tk
+    flakiness (each such test skips cleanly, never fails, when the
+    environment can't spare another real Tk root — see
+    test_settings_start_and_stop_captain_bidding above)."""
+    auth = real_window.captain_bidding_server.auth
+    real_window.show_screen("Settings")
+    screen = real_window._screen_frame
+
+    # PINs are shown (organizer-only screen), one row per team.
+    for pin in auth.get_pins().values():
+        assert _find_widget_containing_text(screen, f"PIN: {pin}") is not None
+    for team in real_window.session.teams:
+        assert _find_widget_containing_text(screen, team.name.upper()) is not None
+    assert _find_widget_containing_text(screen, "NOT CONNECTED") is not None
+
+    # RESET CONNECTION invalidates one team's session without touching PINs.
+    blackout = next(t for t in real_window.session.teams if t.name == "Blackout FC")
+    pins_before_reset = auth.get_pins()
+    login_result = auth.login(auth.get_pin(blackout.id))
+    assert auth.is_authenticated(blackout.id) is True
+
+    screen._on_reset_team_connection_clicked(blackout.id)
+    assert auth.is_authenticated(blackout.id) is False
+    assert auth.authenticate(login_result.token) is None
+    assert auth.get_pins() == pins_before_reset
+
+    # REGENERATE ALL PINS (via the same seam the confirmation dialog's
+    # button calls) changes every PIN and signs out every captain,
+    # without touching the auction session itself.
+    import copy
+
+    history_snapshot = copy.deepcopy(real_window.session.auction.history)
+    teams_snapshot = copy.deepcopy(real_window.session.teams)
+    darkstar = next(t for t in real_window.session.teams if t.name == "Darkstar FC")
+    darkstar_login = auth.login(auth.get_pin(darkstar.id))
+    pins_before_regenerate = auth.get_pins()
+
+    screen._execute_regenerate_pins()
+
+    assert auth.get_pins() != pins_before_regenerate
+    assert auth.authenticate(darkstar_login.token) is None
+    assert real_window.session.auction.history == history_snapshot
+    assert real_window.session.teams == teams_snapshot
+
+
+def test_live_auction_mixed_mode_and_pin_privacy(real_window) -> None:
+    """Live Auction never renders a PIN, and a team's manual bid buttons
+    stay enabled purely by roster/GK/budget eligibility — never gated by
+    whether that team's captain is currently connected."""
+    from services.auction_service import team_can_bid_for_player
+
+    auth = real_window.captain_bidding_server.auth
+    real_window.captain_bidding_server.start()
+    blackout = next(t for t in real_window.session.teams if t.name == "Blackout FC")
+    auth.login(auth.get_pin(blackout.id))  # one connected captain, others not
+
+    real_window.show_screen("Live Auction")
+    screen = real_window._screen_frame
+
+    for pin in auth.get_pins().values():
+        assert _find_widget_containing_text(screen, pin) is None
+
+    current_player = real_window.session.current_player
+    for team in real_window.session.teams:
+        eligible = team_can_bid_for_player(team, current_player, real_window.session.players)
+        button = _find_team_button_containing(screen, team.name)
+        assert button is not None
+        expected_state = "normal" if eligible else "disabled"
+        assert button.cget("state") == expected_state
+
+
+def _find_team_button_containing(widget, team_name: str):
+    for child in widget.winfo_children():
+        if isinstance(child, ctk.CTkButton):
+            try:
+                if child.cget("text").startswith(team_name):
+                    return child
+            except Exception:
+                pass
+        found = _find_team_button_containing(child, team_name)
+        if found is not None:
+            return found
+    return None
+
+
+# ============================================================
+# WINDOWS RC0 PACKAGED-RUNTIME STABILIZATION
+# ============================================================
+
+
+def test_settings_shows_failed_state_and_last_error(hidden_root) -> None:
+    from services.captain_auth_service import CaptainAuthService
+    from services.captain_bidding_server import CaptainBiddingServer, ServerLifecycleState
+
+    auth = CaptainAuthService()
+    server = CaptainBiddingServer(AuctionSession(), auth=auth)
+    with server._state_lock:
+        server._state = ServerLifecycleState.FAILED
+        server._last_error = "Server failed to bind to port 8765 (it may already be in use)."
+    hidden_root.captain_bidding_server = server
+    try:
+        screen = build_screen(hidden_root, None)
+        try:
+            assert _find_widget_containing_text(screen, "FAILED") is not None
+            assert _find_widget_containing_text(screen, "SERVER START FAILED") is not None
+            assert _find_widget_containing_text(screen, "already be in use") is not None
+        finally:
+            screen.destroy()
+    finally:
+        del hidden_root.captain_bidding_server
+
+
+def test_settings_shows_running_with_lan_address_unavailable(hidden_root, monkeypatch) -> None:
+    from services.captain_auth_service import CaptainAuthService
+    from services.captain_bidding_server import CaptainBiddingServer, ServerLifecycleState
+
+    auth = CaptainAuthService()
+    server = CaptainBiddingServer(AuctionSession(), port=8765, auth=auth)
+    with server._state_lock:
+        server._state = ServerLifecycleState.RUNNING
+    server._actual_port = 8765
+    monkeypatch.setattr(type(server), "lan_url", property(lambda self: None))
+    hidden_root.captain_bidding_server = server
+    try:
+        screen = build_screen(hidden_root, None)
+        try:
+            assert _find_widget_containing_text(screen, "RUNNING") is not None
+            assert _find_widget_containing_text(screen, "Unavailable") is not None
+            assert _find_widget_containing_text(screen, "localhost:8765") is not None
+        finally:
+            screen.destroy()
+    finally:
+        del hidden_root.captain_bidding_server
+
+
+def test_settings_static_diagnostics_are_not_recomputed_on_render(hidden_root, monkeypatch) -> None:
+    """The RC1 stabilization ticket's core Settings performance fix:
+    players/teams/validation/photo-scan must be computed once at
+    construction, never again on a subsequent `_render()` (every
+    preference toggle, PIN reset, or server start/stop previously
+    re-ran a full canonical-data reload plus a 32-file disk scan)."""
+    import ui.screens.settings_screen as settings_module
+
+    call_counts = {"players": 0, "teams": 0, "validate": 0}
+    real_load_players = settings_module.load_players
+    real_load_teams = settings_module.load_teams
+    real_validate_setup = settings_module.validate_setup
+
+    def counting_load_players(*args, **kwargs):
+        call_counts["players"] += 1
+        return real_load_players(*args, **kwargs)
+
+    def counting_load_teams(*args, **kwargs):
+        call_counts["teams"] += 1
+        return real_load_teams(*args, **kwargs)
+
+    def counting_validate_setup(*args, **kwargs):
+        call_counts["validate"] += 1
+        return real_validate_setup(*args, **kwargs)
+
+    monkeypatch.setattr(settings_module, "load_players", counting_load_players)
+    monkeypatch.setattr(settings_module, "load_teams", counting_load_teams)
+    monkeypatch.setattr(settings_module, "validate_setup", counting_validate_setup)
+
+    screen = build_screen(hidden_root, None)
+    try:
+        for _ in range(4):
+            screen._render()
+        assert call_counts == {"players": 1, "teams": 1, "validate": 1}
+    finally:
+        screen.destroy()
