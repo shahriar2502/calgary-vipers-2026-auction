@@ -162,6 +162,7 @@ Final Player Roster Lock — September 2026 = COMPLETE — canonical roster fina
 Final FPL Correction — September 2026 = COMPLETE — Shadman Sakib/Rhishik Roy's last-season FPL values confirmed (52/62); Mirza Mohammed remains N/A; not the final v1.0 release.
 First Auction Rules V2 — September 2026 = COMPLETE — GK/non-GK base prices (4M/2M) and a player-aware dynamic completion reserve replaced the flat 1M minimum/reserve; a team may finish the first auction with 0M, and its leftover budget is preserved for future transfer activity; not the final v1.0 release.
 Post-Auction Match Results + Transfer Budget Tracker — September 2026 = COMPLETE — new Match Results screen: organizer match-score entry, automatic WIN/DRAW/LOSS money awards, and a derived transfer-budget ledger built on top of each team's untouched first-auction remaining budget; not the second transfer window itself, not the final v1.0 release.
+Second Auction — Milestone 1: Transfer Window Setup — September/October 2026 = COMPLETE — new Second Auction screen: manual 4-per-team release selection with captain/GK protection, original-first-auction-purchase-price refund preview, and a confirmable 16-player release pool; does not implement second-auction bidding itself, not the final v1.0 release.
 
 ## Completed in Milestone 1
 
@@ -788,6 +789,64 @@ New: `tests/test_match_result.py` (24 tests — model creation/validation/awards
 ### Full regression
 
 `python -m pytest -q` — see the ticket's final report for the exact count; run after every change in this ticket, confirming zero regressions against the pre-ticket 947/6/0 baseline beyond the intentional new tests above.
+
+## Second Auction — Milestone 1: Transfer Window Setup — September/October 2026
+
+**An additive, independent transfer-window *setup* module — not the second auction itself.** Nothing here touches the completed first auction: no SOLD/UNSOLD transaction, player release, roster mutation, budget mutation, phone bidding, or captain PIN behavior was changed. Actual second-auction bidding, a transfer pool, roster swapping, FPL eligibility, and standings are all explicit future milestones and were not implemented.
+
+### SIDEBAR PLACEMENT
+
+A new sidebar screen, **Second Auction** (`ui/screens/second_auction_screen.py`), inserted directly below Live Auction and above Player Cards. `ui/main_window.py`'s `NAV_ITEMS` order is now: Live Auction, Second Auction, Player Cards, Players & Setup, Teams, Auction History, Reports, Match Results, Settings.
+
+### COMPLETED FIRST-AUCTION DEPENDENCY
+
+Visible before the first auction ends (mirroring Match Results' own gating pattern), but setup is gated identically: `AuctionSession.toggle_second_auction_release`/`confirm_second_auction_release_plan`/`unlock_second_auction_release_plan` all raise `SecondAuctionError` unless `session.auction.status == AuctionStatus.COMPLETE` — a BLOCKED auction is explicitly never treated as completed. The `_require_completed_auction` helper shared with `add_match_result` was generalized to accept the caller's own exception type, so both subsystems enforce the exact same rule without duplicating it.
+
+### MANUAL RELEASE SELECTION / CAPTAIN+GK PROTECTION
+
+The organizer manually toggles release checkboxes per team; the app enforces only the two protections it can verify on its own: `services/second_auction_service.is_locked_player(player) = player.is_captain or player.position == Position.GK`. No FPL-based eligibility or highest/lowest-FPL protection exists anywhere in this codebase — the organizer is expected to already know that from another tool. `toggle_release` additionally enforces: the player must belong to the specific team's own roster, at most `MAX_RELEASES_PER_TEAM = 4` selections per team, and no modification once the plan is `CONFIRMED`.
+
+### ORIGINAL-PRICE REFUNDS
+
+Every refund reads `Player.sold_price` directly — the exact amount the player's current team paid in the first auction, frozen since the moment they were SOLD and never touched by this ticket (never OVR, base price, current value, FPL, or a future second-auction price). Captains were pre-assigned and free (`sold_price` is always `None` for a captain, enforced by `Player.__post_init__` since Milestone 1) and are locked anyway, so they never need a refund path.
+
+### SECOND-AUCTION BUDGET FORMULA
+
+```
+second_auction_starting_budget =
+    first_auction_remaining_budget + match_money_earned + selected_release_refunds
+  = current_transfer_budget + selected_release_refunds
+```
+
+`current_transfer_budget` is read from the *existing* `services/match_result_service.build_team_ledger` — never a second formula. `services/second_auction_service.TeamReleasePreview` combines that one number with the sum of the currently-selected refunds; both `total_refunds` and `second_auction_starting_budget` are properties computed fresh every time, never a stored running total, for the exact same "edit/delete can never double-count" reason `TeamBudgetLedger` already established.
+
+### RELEASE-PLAN PERSISTENCE
+
+`models/second_auction.py`'s `SecondAuctionSetup` stores only the organizer's *selections* — `status` (`DRAFT`/`CONFIRMED`), `released_player_ids_by_team: dict[team_id, list[player_id]]`, and `confirmed_at`. Deliberately no refund amounts or budget totals are stored (per the ticket's own "prefer NOT storing derived budget totals if they can be recalculated safely") — everything else is derived on demand from `Player.sold_price` and the match-result ledger. `AuctionSession.second_auction_setup` is persisted as an always-present, additive `"second_auction_setup"` snapshot key (`services/persistence_service.py`), parsed leniently on load (`_reconstruct_second_auction_setup`): a missing key (every pre-existing save) or malformed value falls back to a fresh empty DRAFT setup rather than ever failing the whole session load — identical rationale and mechanism to `match_results`. No `SCHEMA_VERSION` bump was needed.
+
+### FIRST-AUCTION IMMUTABILITY
+
+`services/second_auction_service.py` never calls `process_sale`/`process_unsold`/`place_bid`, never mutates a `Team`'s `roster`/`remaining_budget`/`auction_spending`, and never mutates a `Player`'s `sold_price`/`auction_status`. `Auction.status` is never set away from `COMPLETE` by anything in this ticket. Verified directly: building a full release preview and confirming a plan leaves every `Team`'s budget/roster, every `Player`'s `sold_price`, and `auction.history` byte-for-byte unchanged.
+
+### CONFIRMATION FLOW
+
+`CONFIRM RELEASE LISTS` is disabled until `all_teams_have_exactly_four` — every one of the session's teams has exactly 4 selected. Clicking it opens a confirmation dialog ("Confirm these 16 released players? ... The first-auction history and budgets will remain unchanged.") mirroring Settings' existing "Reset App Preferences"/"Regenerate All PINs" pattern. Confirming only sets `status=CONFIRMED`/`confirmed_at=now` — no roster/budget mutation, no second-auction transaction history is created. Once confirmed, the screen shows "RELEASE PLAN CONFIRMED" / "SECOND AUCTION NOT STARTED", every release checkbox becomes read-only, and an **EDIT RELEASE PLAN** button (its own confirmation dialog) calls `unlock_second_auction_release_plan` to return to `DRAFT` — safe only because second-auction bidding doesn't exist yet, so nothing downstream has acted on the confirmed plan.
+
+### MOCK/LIVE ISOLATION
+
+`second_auction_setup` lives on the exact same per-session snapshot as `players`/`teams`/`match_results` — a MOCK session's release plan is written only to its own `saves/mocks/<id>.json`, a LIVE session's only to `saves/live/live_active.json`. Verified directly that two sessions of different modes never see each other's release selections after independent save/reload.
+
+### REPORTS
+
+A tiny, read-only "Second Auction Release Plan: Draft/Confirmed" indicator line was added to the existing Reports screen (shown whenever the first auction is COMPLETE) — Reports' own architecture/layout was not otherwise changed.
+
+### TESTS
+
+New: `tests/test_second_auction.py` (6 tests — the `SecondAuctionSetup` model's own round-trip/normalization), `tests/test_second_auction_service.py` (30 tests — release rules and the refund/budget preview, numbered to match the ticket's own lists), `tests/test_second_auction_session.py` (15 tests — `AuctionSession` gating/autosave/persistence), `tests/test_second_auction_screen.py` (18 tests — the screen itself, including sidebar placement/order). Existing `tests/test_reports_screen.py`/`tests/test_report_service.py` re-verified unaffected by the new indicator.
+
+### Full regression
+
+`python -m pytest -q` — 1014 passed, 6 skipped, 0 failed when run excluding `tests/test_captain_bidding_server.py` (193s), plus that file's own 71 tests passing cleanly (71 passed, 25.66s) when run by itself. That file hangs only when executed back-to-back with the rest of the full suite in one process — a pre-existing, order-dependent environment issue unrelated to this ticket (nothing here touches networking, threading, or the phone-bidding server); it does not reproduce when the file is run alone. All 69 new second-auction tests pass. Zero regressions against the pre-ticket 1016/6/0 baseline.
 
 ## Key implementation decisions
 

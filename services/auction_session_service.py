@@ -37,6 +37,7 @@ from enum import Enum
 from models.auction import Auction, AuctionStatus
 from models.match_result import MatchResult
 from models.player import Player
+from models.second_auction import SecondAuctionSetup
 from models.team import Team
 from services.auction_service import (
     AuctionTransactionError,
@@ -47,10 +48,12 @@ from services.auction_service import (
     sold_player_ids,
 )
 from services import match_result_service
+from services import second_auction_service
 from services.live_bid_service import BidResult, place_bid
 from services.match_result_service import MatchResultError
 from services.player_service import load_players, load_teams, validate_setup
 from services.randomization_service import create_auction
+from services.second_auction_service import SecondAuctionError
 
 
 class SessionMode(str, Enum):
@@ -90,6 +93,12 @@ class AuctionSession:
     # Only ever meaningful once `auction.status == COMPLETE`; the entry
     # points below enforce that themselves rather than trusting callers.
     match_results: list[MatchResult] = field(default_factory=list)
+
+    # Second Auction — Milestone 1 (September/October 2026): also
+    # independent of the first-auction transaction state above, and of
+    # match_results — see services/second_auction_service.py. Only ever
+    # meaningful once `auction.status == COMPLETE`.
+    second_auction_setup: SecondAuctionSetup = field(default_factory=SecondAuctionSetup)
 
     # Milestone 9: session identity/metadata, persisted verbatim by
     # services/persistence_service.py — see that module's save-file shape.
@@ -238,6 +247,7 @@ class AuctionSession:
         self.teams = other.teams
         self.last_result = other.last_result
         self.match_results = other.match_results
+        self.second_auction_setup = other.second_auction_setup
         self.mode = other.mode
         self.session_id = other.session_id
         self.name = other.name
@@ -302,12 +312,12 @@ class AuctionSession:
     # recorded once the tournament's actual final budgets exist.
     # ------------------------------------------------------------------
 
-    def _require_completed_auction(self) -> None:
+    def _require_completed_auction(self, error_cls: type[Exception] = MatchResultError) -> None:
         if self.auction is None:
-            raise MatchResultError("No auction session exists. Start or resume an auction first.")
+            raise error_cls("No auction session exists. Start or resume an auction first.")
         if self.auction.status != AuctionStatus.COMPLETE:
-            raise MatchResultError(
-                "Match-money accounting requires a completed first auction "
+            raise error_cls(
+                "This action requires a completed first auction "
                 f"(current status: {self.auction.status.value})."
             )
 
@@ -334,6 +344,36 @@ class AuctionSession:
     def delete_match_result(self, match_id: str) -> None:
         self._require_completed_auction()
         match_result_service.delete_match_result(self.match_results, match_id)
+        self._trigger_autosave()
+
+    # ------------------------------------------------------------------
+    # Second Auction — Milestone 1 (September/October 2026): transfer-
+    # window release-plan setup. Entirely independent of match_results
+    # and the first-auction transaction methods above — never mutates a
+    # Team/Player/Auction object. See services/second_auction_service.py.
+    # ------------------------------------------------------------------
+
+    def _resolve_team(self, team_id: int) -> Team:
+        team = next((team for team in self.teams if team.id == team_id), None)
+        if team is None:
+            raise SecondAuctionError(f"Team id {team_id} does not belong to this session.")
+        return team
+
+    def toggle_second_auction_release(self, team_id: int, player_id: int) -> None:
+        self._require_completed_auction(SecondAuctionError)
+        team = self._resolve_team(team_id)
+        players_by_id = {player.id: player for player in self.players}
+        second_auction_service.toggle_release(self.second_auction_setup, team, player_id, players_by_id)
+        self._trigger_autosave()
+
+    def confirm_second_auction_release_plan(self) -> None:
+        self._require_completed_auction(SecondAuctionError)
+        second_auction_service.confirm_release_plan(self.second_auction_setup, self.teams)
+        self._trigger_autosave()
+
+    def unlock_second_auction_release_plan(self) -> None:
+        self._require_completed_auction(SecondAuctionError)
+        second_auction_service.unlock_release_plan(self.second_auction_setup)
         self._trigger_autosave()
 
     def _trigger_autosave(self) -> None:

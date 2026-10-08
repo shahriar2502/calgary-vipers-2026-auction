@@ -400,8 +400,26 @@ class ReportsScreen(ctk.CTkFrame):
         self._build_comparison_section(body).grid(row=4, column=0, sticky="ew", pady=(0, 24))
         self._build_team_grid(body).grid(row=5, column=0, sticky="ew")
 
+        next_row = 6
         if self._session.is_complete and self._session.match_results:
-            self._build_post_auction_funding_section(body).grid(row=6, column=0, sticky="ew", pady=(20, 0))
+            self._build_post_auction_funding_section(body).grid(row=next_row, column=0, sticky="ew", pady=(20, 0))
+            next_row += 1
+        if self._session.is_complete:
+            self._build_second_auction_status_indicator(body).grid(row=next_row, column=0, sticky="w", pady=(12, 0))
+
+    def _build_second_auction_status_indicator(self, parent: ctk.CTkBaseClass) -> ctk.CTkLabel:
+        """A tiny, read-only pointer to the Second Auction screen's own
+        release-plan status — Reports' own architecture/layout is not
+        otherwise changed for this (see PROJECT_CONTEXT.md's "SECOND
+        AUCTION — MILESTONE 1")."""
+        setup = self._session.second_auction_setup
+        status_text = "Confirmed" if setup.is_confirmed else "Draft"
+        return ctk.CTkLabel(
+            parent,
+            text=f"Second Auction Release Plan: {status_text}",
+            font=theme.body_font(size=11, weight="bold"),
+            text_color=theme.ACCENT_GREEN if setup.is_confirmed else theme.TEXT_SECONDARY,
+        )
 
     def _build_post_auction_funding_section(self, parent: ctk.CTkBaseClass) -> ctk.CTkFrame:
         """Small, read-only funding summary — the Match Results screen

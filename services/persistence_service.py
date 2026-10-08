@@ -49,6 +49,7 @@ from pathlib import Path
 from models.auction import Auction
 from models.match_result import MatchResult
 from models.player import Player
+from models.second_auction import SecondAuctionSetup
 from models.team import Team
 from services.auction_session_service import AuctionSession, SessionMode
 from services.runtime_paths import WRITABLE_ROOT
@@ -169,6 +170,12 @@ def build_snapshot(session: AuctionSession, updated_at: str) -> dict:
         # added earlier (see PROJECT_CONTEXT.md's "POST-AUCTION MATCH
         # RESULTS + TRANSFER BUDGET TRACKER").
         "match_results": [result.to_dict() for result in session.match_results],
+        # Second Auction — Milestone 1 (September/October 2026): additive,
+        # optional key, exactly like "match_results" above — an older save
+        # file has no "second_auction_setup" key at all, and
+        # `restore_session` treats that identically to a fresh DRAFT setup
+        # with no releases selected. No schema_version bump needed.
+        "second_auction_setup": session.second_auction_setup.to_dict(),
     }
 
 
@@ -319,6 +326,21 @@ def _reconstruct_match_results(data: dict) -> list[MatchResult]:
     return results
 
 
+def _reconstruct_second_auction_setup(data: dict) -> SecondAuctionSetup:
+    """Best-effort, never-raising — same rationale as
+    `_reconstruct_match_results` above: a missing key (every pre-existing
+    save file) or a malformed value falls back to a fresh DRAFT setup
+    with no releases selected, rather than ever failing the whole session
+    load."""
+    raw = data.get("second_auction_setup")
+    if not isinstance(raw, dict):
+        return SecondAuctionSetup()
+    try:
+        return SecondAuctionSetup.from_dict(raw)
+    except (TypeError, ValueError, KeyError):
+        return SecondAuctionSetup()
+
+
 def restore_session(data: dict) -> AuctionSession:
     """Validate `data` (structurally, per-model, and cross-referentially)
     and reconstruct an `AuctionSession` equivalent to a freshly-created
@@ -333,6 +355,7 @@ def restore_session(data: dict) -> AuctionSession:
         players=players,
         teams=teams,
         match_results=_reconstruct_match_results(data),
+        second_auction_setup=_reconstruct_second_auction_setup(data),
         mode=SessionMode(data["session_mode"]),
         session_id=data["session_id"],
         name=data.get("name"),

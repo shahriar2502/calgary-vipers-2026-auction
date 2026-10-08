@@ -24,6 +24,7 @@ from ui.widgets import load_image_safely
 # (nav label, placeholder description) in sidebar display order.
 NAV_ITEMS: list[tuple[str, str]] = [
     ("Live Auction", "Random player reveal and bidding controls will appear here."),
+    ("Second Auction", "Transfer-window release setup for the second auction will appear here."),
     ("Player Cards", "A visual showcase of all 32 players will appear here."),
     ("Players & Setup", "Player roster management and auction setup will appear here."),
     ("Teams", "Team rosters, captains, remaining budgets, and squad sizes will appear here."),
