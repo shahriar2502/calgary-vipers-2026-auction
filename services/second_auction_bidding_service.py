@@ -1,33 +1,11 @@
-"""Second Auction — Milestone 2: the bidding engine (October 2026).
+"""Business logic for the second player auction.
 
-Initializes a `SecondAuctionState` from a CONFIRMED `SecondAuctionSetup`,
-then runs SOLD/UNSOLD/re-auction over the 16-player release pool.
+The second auction maintains independent budgets, rosters, bids, and
+transaction history so the original first-auction record remains unchanged.
 
-Deliberately NOT a reuse of `services/auction_service.py`'s `Team`/
-`Player` mutation: the ticket's own "do not assume first-auction
-architecture can simply be reused unchanged" warning applies most
-directly here. This module:
-
-- never calls `process_sale`/`process_unsold`/`place_bid`
-- never mutates a `Team`'s `remaining_budget`/`roster`/`auction_spending`
-- never mutates a `Player`'s `sold_price`/`sold_to`/`auction_status`
-- never touches the first auction's `Auction.history`
-
-Every second-auction budget/roster/transaction fact lives only on the
-`SecondAuctionState` passed in — see models/second_auction.py's own
-docstring. Each team's starting budget comes directly from
-`services/second_auction_service.build_all_release_previews` (never a
-second formula), and "previous team"/"original first-auction price" for
-a released player comes directly from that same module's
-`build_release_pool` (never duplicated here either).
-
-The reserve/max-legal-bid rule below is also deliberately NOT the first
-auction's dynamic goalkeeper-aware formula (`Team.maximum_legal_bid`):
-every second-auction team already has its mandatory goalkeeper (GKs are
-never released), and every player in the pool is outfield (GKs are never
-released either), so the reserve only ever needs to cover the remaining
-roster slots at `OUTFIELD_BASE_PRICE` each — see
-`minimum_completion_reserve_after_purchase`.
+Released players may be purchased by any eligible team, including their
+previous team. Budget validation reserves enough money to fill all remaining
+roster positions at the minimum outfield price.
 """
 
 from __future__ import annotations
@@ -55,10 +33,7 @@ UNSOLD = "UNSOLD"
 
 
 class SecondAuctionBiddingError(Exception):
-    """Raised when a second-auction initialize/SOLD/UNSOLD action is not
-    currently valid. Deliberately distinct from `AuctionTransactionError`/
-    `SecondAuctionError` (the Milestone 1 release-setup exception) — the
-    bidding engine is its own independent subsystem."""
+    """Raised when a second-auction initialization or transaction is invalid."""
 
 
 def _now_iso() -> str:
@@ -66,8 +41,7 @@ def _now_iso() -> str:
 
 
 # ----------------------------------------------------------------------
-# Reserve / maximum-legal-bid rule (second-auction-specific — see module
-# docstring for why this is not the first auction's formula)
+# Reserve and maximum-legal-bid rules for the second auction
 # ----------------------------------------------------------------------
 
 
