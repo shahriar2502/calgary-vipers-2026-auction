@@ -57,11 +57,11 @@ _LOGIN_ERROR_STATUS = {
 
 
 class ServerLifecycleState(str, Enum):
-    """The captain-bidding server's real, observable lifecycle — Settings
-    reads this directly rather than inferring status from `is_running`
-    alone, so a start failure is always visible and explained instead of
-    silently looking identical to "never started" (see PROJECT_CONTEXT.md's
-    "Windows RC0 Packaged-Runtime Stabilization")."""
+    """Observable lifecycle states used by the Settings screen.
+
+    Keeping startup state explicit lets the UI distinguish a failed launch
+    from a server that was never started.
+    """
 
     OFF = "OFF"
     STARTING = "STARTING"
