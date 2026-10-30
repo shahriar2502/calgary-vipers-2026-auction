@@ -339,7 +339,7 @@ This project therefore went beyond a prototype and was used as an operational to
 
 # Project Structure
 
-text
+```text
 football-auction-manager/
 ├── main.py
 ├── data/                  # Canonical tournament data
@@ -349,13 +349,13 @@ football-auction-manager/
 │   └── screens/
 ├── assets/                # Branding and player images
 ├── tests/                 # Pytest test suite
-├── PROJECT_CONTEXT.md     # Detailed internal architecture/rules
+├── ARCHITECTURE.md        # System design and tournament architecture
 ├── requirements.txt
 ├── requirements-build.txt
 ├── calgary_vipers_auction.spec
 ├── build_windows.bat
 └── README.md
-
+```
 
 Runtime folders such as `saves/`, `config/`, and logs are excluded from the repository.
 
