@@ -26,3 +26,5 @@ build_debug/
 dist/
 dist_debug/
 
+# Local editor/tool configuration
+.claude/
