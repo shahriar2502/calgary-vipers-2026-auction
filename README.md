@@ -1,197 +1,474 @@
-# Football Auction Manager
+# Calgary Vipers Auction 2026
 
-A desktop football-auction application for the Calgary Vipers 2026 tournament. The immediate goal is a reliable tournament-ready tool; the longer-term goal is a polished software portfolio project.
+A custom desktop football auction management system built in Python for the **Calgary Vipers recreational soccer community**.
 
-Calgary Vipers is the application and tournament branding identity. It is not an auction team. The official logo is stored at `assets/branding/calgary_vipers_logo.png`, and its UI-facing values are configurable in `data/settings.json`.
+The application was created to manage our player auctions, team budgets, captain bidding, match-based transfer funds, and second transfer-window auction.
 
-## Current state
+It was successfully used to run both the **first live player auction** and the **second transfer-window auction** for our tournament.
 
-Milestones 1–8 are complete: repository structure and domain models, a verified/finalized 32-player database and four-team initialization, a randomized hidden auction queue/order engine, a basic CustomTkinter application shell, a real, read-only Players & Setup screen, a real Teams screen (read-only for edits, but live-updating once an auction is running), a SOLD/UNSOLD auction transaction service, and a real, interactive **Live Auction** screen — start a session, reveal the current player, select a winning team, enter a price, confirm SOLD or UNSOLD, and watch team budgets/rosters/progress update immediately. Milestone 8.1 corrected the tournament rules on top of that: UNSOLD players automatically return in a re-auction round instead of ending the auction, a team may hold at most one goalkeeper and every final squad must contain exactly one, a team at 8/8 players is no longer eligible to bid, and a true dead-end (no eligible team can take the remaining players) surfaces as a clear "auction blocked" state instead of looping or silently completing. A pre-Milestone-9 fix then closed a budget gap: a team can no longer spend so much on one player that it can't afford the minimum price for every roster slot it still needs (later superseded by **First Auction Rules V2**, below). **Milestone 9 adds full persistence**: every auction is either a MOCK (practice) or LIVE (tournament) session, autosaves after every SOLD/UNSOLD/round-transition, and survives a full app restart exactly as it was. A September 2026 follow-up added **Player Cards** — a visual gallery/showcase of all 32 players (separate from the administrative Players & Setup table) with search/filter/sort and a click-to-expand detail view, plus a nullable last-season FPL points statistic per player. A further September 2026 follow-up turned **Auction History** into a real, read-only, chronological transaction-timeline screen for the current session (search/filter by result/round/team, summary cards, oldest/newest sort). A further September 2026 follow-up turned **Reports** into a real, read-only auction summary/analytics dashboard (KPIs, team comparisons, price/FPL/OVR analytics, re-auction summary). A further September 2026 follow-up turned **Settings** into a real organizer configuration/diagnostics screen (fullscreen/display, SOLD/UNSOLD confirmation preferences, session/save status, tournament diagnostics, and a locked, read-only tournament-rules summary). Every sidebar route now has a real screen. A September 2026 follow-up, **Captain Phone Bidding — Phase 1**, proved that a real phone on the same Wi-Fi network can place bids for one team while the organizer bids for the other teams from the laptop. A further September 2026 follow-up, **Captain Phone Bidding — Phase 2**, replaced that open team selector with real per-team PIN login and added full mixed-mode support: any number of captain phones from 0 to 4 may be connected at once, each locked to its own team, while the organizer can still bid manually for every team — connected, disconnected, or never logged in — from the laptop at all times. See "Captain Phone Bidding — Local Test" and "Four-Captain Setup" below. The organizer's laptop remains the sole authority for finalizing SOLD/UNSOLD, and the desktop-only workflow above still works unchanged with the phone-bidding server off. A further September 2026 follow-up, **Windows Packaging — RC0**, produced a test Windows `.exe` build (see "Windows Test Build" below) so the app can be launched without installing Python or using an editor — an RC0 test build only, not the final tournament release. A further September 2026 follow-up locked the **final 32-player tournament roster** (final replacements, positions, OVRs, photos, and confirmed FPL values). A further September 2026 follow-up, **First Auction Rules V2**, replaced the flat 1M minimum price / flat 1M-per-slot reserve with position-aware base prices (4M GK, 2M outfield) and a player-aware dynamic completion reserve — see "Tournament snapshot" above and PROJECT_CONTEXT.md's "FIRST AUCTION RULES V2" for the full rule and worked examples. A further September 2026 follow-up added **Match Results**, a new sidebar screen for post-auction match-score entry, automatic WIN/DRAW/LOSS money awards, and a transfer-budget tracker derived from each team's untouched first-auction remaining budget — see "How to Enter Match Results After the Auction" below. This is a funding tracker only; the second transfer window itself is not implemented yet. A further September/October 2026 follow-up, **Second Auction — Milestone 1**, added a new sidebar screen for transfer-window *setup*: manual 4-per-team release selection (captain and goalkeeper always locked), an original-first-auction-purchase-price refund preview, and a confirmable 16-player release pool — see "How to Prepare the Second Auction" below. A further October 2026 follow-up, **Second Auction — Milestone 2**, implemented the second auction itself: once a release plan is confirmed, **START SECOND AUCTION** applies the releases, builds the 16-player pool, and freezes each team's starting budget, after which the organizer runs the same manual SOLD/UNSOLD workflow as the first auction (its own base price, budget-reserve rule, and re-auction behavior) until every team is back to 8 players — see "How to Run the Second Auction" below. A final October 2026 follow-up, **Second Auction — Milestone 3**, added captain phone bidding for the second auction (the same PIN login and mixed-mode rules as the first auction, with the organizer always in sole control of SOLD/UNSOLD), a permanent on-screen Captain Connections panel, premium visual polish for the Second Auction LIVE/COMPLETE views, and a phase-aware Teams screen that shows the actual current/final tournament rosters once the second auction starts — see "Second Auction — Captain Phone Bidding" below.
 
-## Tournament snapshot
+## About the Project
 
-- 32 total players: 4 pre-assigned captains and 28 auction-eligible players
-- 4 teams, each beginning with a 100M auction budget
-- 8-player final squad target: 1 captain plus up to 7 purchases, including exactly 1 goalkeeper
-- Captains never enter the auction and cost nothing
-- Positions: `GK`, `DEF`, `MID`, `ATT`
-- **Base price** (First Auction Rules V2 — September 2026): 4M for a goalkeeper, 2M for every other position — the minimum any bid or sale price may be
-- **Dynamic completion reserve**: a team may never spend so much on one purchase that it can no longer complete its remaining mandatory roster slots (including its still-needed goalkeeper) at their own minimum prices afterward — but a team *may* legitimately finish the auction with 0M remaining. See PROJECT_CONTEXT.md's "FIRST AUCTION RULES V2" for the full formula and worked examples.
+Calgary Vipers is a recreational soccer community where we regularly play together and organize our own tournaments.
 
-## Project structure
+I wanted to build something useful for the group rather than creating a project only for practice, so I developed a complete auction management system around the way our tournament actually works.
 
-```text
+The project started as a simple player-auction tool and gradually grew into a full tournament auction platform with:
+
+- live player bidding
+- captain phone bidding
+- team budget management
+- roster validation
+- persistent tournament sessions
+- auction history
+- reports and analytics
+- match-result based transfer funds
+- player releases and refunds
+- a full second transfer-window auction
+- final updated team rosters
+
+The application was used during the real tournament rather than only being demonstrated with test data.
+
+
+## Tech Stack
+
+- **Python**
+- **CustomTkinter**
+- **FastAPI**
+- **HTML / JavaScript** for captain phone bidding
+- **JSON** persistence
+- **Pytest**
+- **Pillow**
+- **PyInstaller**
+
+
+## Tournament Structure
+
+The tournament contains:
+
+- 32 total players
+- 4 teams
+- 4 pre-assigned captains
+- 28 first-auction players
+- 100M starting budget per team
+- 8-player squads
+- exactly one goalkeeper per team
+
+Captains are assigned to their teams before the auction and do not consume auction budget.
+
+### First-auction base prices
+
+- Goalkeeper: **4M**
+- Outfield player: **2M**
+
+The auction also uses a dynamic completion-reserve rule that prevents teams from spending so much on one player that they can no longer afford to complete their required squad.
+
+
+# Features
+
+## Live First Auction
+
+The main auction screen manages the complete first-auction workflow.
+
+Features include:
+
+- randomized player order
+- live player cards
+- SOLD / UNSOLD handling
+- automatic re-auction rounds
+- team eligibility validation
+- current bid and leading team
+- player-specific maximum legal bids
+- team budget tracking
+- squad-size tracking
+- mandatory goalkeeper validation
+- automatic auction completion
+- blocked-state protection for impossible auction states
+
+UNSOLD players automatically return in later auction rounds until every eligible player has been sold.
+
+
+## Captain Phone Bidding
+
+Captains can participate in the auction from their phones while connected to the same local Wi-Fi network as the organizer laptop.
+
+Each team receives its own private PIN.
+
+After logging in, a captain's phone is permanently associated with that team for the session.
+
+Captain phones can:
+
+- view the current player
+- view current bid and leading team
+- view their own team budget
+- view roster size
+- view maximum legal bid
+- place +1M / +2M / +5M bids
+
+Captain phones **cannot** finalize a player sale.
+
+The organizer always remains responsible for SOLD / UNSOLD decisions.
+
+The system also supports mixed-mode bidding:
+
+- 0 phones connected
+- 1 phone connected
+- several phones connected
+- all 4 captains connected
+
+The organizer can manually bid for any team at any time, even when that captain is connected by phone.
+
+
+## Persistent MOCK and LIVE Sessions
+
+The app supports two session types:
+
+### MOCK
+
+Used for practice, testing, and rehearsing tournament scenarios.
+
+### LIVE
+
+Used for the official tournament record.
+
+Auction sessions autosave after important transactions and can be reopened after the application closes.
+
+Saved data includes:
+
+- auction progress
+- player queue
+- team budgets
+- rosters
+- auction history
+- match results
+- transfer-window setup
+- second-auction state
+
+MOCK and LIVE sessions are kept separate.
+
+
+## Teams
+
+The Teams screen displays all four squads.
+
+Before the second auction, it shows the first-auction teams.
+
+During and after the second auction, it switches to the **current tournament roster** rather than displaying outdated first-auction ownership.
+
+After the transfer window is complete, each team shows:
+
+- final roster
+- captain
+- goalkeeper
+- second-auction starting budget
+- second-auction spending
+- final remaining budget
+- 8 / 8 squad status
+
+Players acquired during the second auction can also be identified as new transfers.
+
+
+## Player Cards
+
+A visual gallery displays every tournament player with:
+
+- player photo
+- name
+- position
+- overall rating
+- captain status
+- historical FPL information where available
+
+Players can be searched, filtered, sorted, and opened in a larger detail view.
+
+
+## Auction History
+
+The first-auction history is preserved as a chronological transaction record.
+
+It records:
+
+- SOLD attempts
+- UNSOLD attempts
+- player
+- team
+- sale price
+- auction round
+
+A player who goes UNSOLD and is later purchased keeps both transactions in the historical record.
+
+The original first-auction ownership and purchase prices are never overwritten by the second auction.
+
+
+## Reports
+
+The Reports screen provides an auction analytics dashboard including:
+
+- total players sold
+- total spending
+- average sale price
+- median sale price
+- highest sale
+- lowest sale
+- most expensive purchase
+- highest-rated purchases
+- team spending comparisons
+- remaining budgets
+- squad sizes
+- re-auction statistics
+
+
+# Match Results and Transfer Budgets
+
+After the first auction, tournament match results can be entered directly into the application.
+
+Match-money rules:
+
+- **Win: +4M**
+- **Draw: +2M per team**
+- **Loss: +1M**
+
+The application calculates:
+
+`Current Transfer Budget = First Auction Remaining Budget + Match Earnings`
+
+Match results can be:
+
+- added
+- edited
+- deleted
+
+Changing a result recalculates the financial totals rather than adding duplicate awards.
+
+The original first-auction remaining budget always stays preserved separately.
+
+
+# Second Transfer Window
+
+The application includes a full second-auction workflow.
+
+## Player Releases
+
+Each team releases exactly four players.
+
+The application automatically prevents the release of:
+
+- the team captain
+- the team goalkeeper
+
+Other eligibility decisions can be handled by the tournament organizer.
+
+The release screen shows:
+
+- current team roster
+- selected releases
+- original first-auction purchase price
+- refund amount
+- projected second-auction starting budget
+
+Exactly 16 players enter the second-auction pool.
+
+
+## Release Refunds
+
+A released player refunds the amount their team originally paid for them during the first auction.
+
+The second-auction budget is calculated as:
+
+`Second Auction Starting Budget = Current Transfer Budget + Release Refunds`
+
+The original first-auction transaction remains unchanged for historical purposes.
+
+
+## Second Auction
+
+The second auction has its own independent state, budgets, rosters, and transaction history.
+
+Each team begins with four retained players and four open squad positions.
+
+The second auction supports:
+
+- randomized 16-player pool
+- SOLD / UNSOLD
+- re-auction rounds
+- squad-size validation
+- budget validation
+- completion-reserve logic
+- captain phone bidding
+- manual organizer bidding
+- interruption and resume
+- final 8-player squads
+
+The organizer can close and reopen the application during the second auction and continue from the saved state.
+
+
+## Second-Auction Phone Bidding
+
+Captain phone bidding works during the second auction using the same team PIN system.
+
+The Second Auction screen also displays a live captain connection panel showing the status of all four teams.
+
+Examples:
+
+- CONNECTED
+- RECENTLY ACTIVE
+- MANUAL / OFFLINE
+
+Even if a phone disconnects, the organizer can immediately continue bidding manually for that team.
+
+
+# Real Tournament Usage
+
+The application was used successfully to run the actual Calgary Vipers tournament auctions.
+
+The first auction handled:
+
+- 28 auction players
+- 4 teams
+- multiple auction rounds
+- live team budgets
+- captain phone bidding
+- final squad creation
+
+After several gameweeks, match results were recorded to calculate transfer-window funding.
+
+The same tournament session was then used to prepare and run the second transfer-window auction, including player releases, refunds, captain bidding, and final squad updates.
+
+This project therefore went beyond a prototype and was used as an operational tool for the soccer community it was designed for.
+
+
+# Project Structure
+
+text
 football-auction-manager/
 ├── main.py
-├── data/                 # Player, team, and settings JSON (read-only canonical reference data)
-├── saves/                # MOCK/LIVE auction session saves (git-ignored, created on first save)
-├── models/               # GUI-independent domain models and validation
-├── services/             # Business logic: config/player/team loading, filtering, validation, roster resolution, randomized auction queue, SOLD/UNSOLD transactions, shared AuctionSession, persistence, live-bid validation, captain phone-bidding server
-├── ui/                   # CustomTkinter GUI: main window, theme, shared widgets, navigation, screens/
-├── assets/               # Official branding, player/team images, placeholders
-├── tests/                # pytest model and configuration tests
-├── PROJECT_CONTEXT.md    # Authoritative project rules and status
+├── data/                  # Canonical tournament data
+├── models/                # Domain models
+├── services/              # Auction and business logic
+├── ui/                    # CustomTkinter application
+│   └── screens/
+├── assets/                # Branding and player images
+├── tests/                 # Pytest test suite
+├── PROJECT_CONTEXT.md     # Detailed internal architecture/rules
 ├── requirements.txt
-├── requirements-build.txt        # Windows packaging (PyInstaller) -- build-time only
-├── calgary_vipers_auction.spec   # PyInstaller build spec (see "Windows Test Build" below)
-├── build_windows.bat             # One-command Windows .exe build
+├── requirements-build.txt
+├── calgary_vipers_auction.spec
+├── build_windows.bat
 └── README.md
-```
 
-## Setup and tests
 
-Python 3.11 or newer is recommended.
+Runtime folders such as `saves/`, `config/`, and logs are excluded from the repository.
+
+
+# Running the Project
+
+Python 3.11+ is recommended.
+
+### Create a virtual environment
 
 ```bash
 python -m venv .venv
-# Windows: .venv\Scripts\activate
-# macOS/Linux: source .venv/bin/activate
+```
+
+### Activate it
+
+Windows:
+
+```bash
+.venv\Scripts\activate
+```
+
+macOS / Linux:
+
+```bash
+source .venv/bin/activate
+```
+
+### Install dependencies
+
+```bash
 python -m pip install -r requirements.txt
+```
+
+### Run the application
+
+```bash
+python main.py
+```
+
+---
+
+# Running Tests
+
+```bash
 python -m pytest
 ```
 
-Running `python main.py` launches the Calgary Vipers Auction 2026 desktop window: a branded header and sidebar navigation (Live Auction, Second Auction, Player Cards, Players & Setup, Teams, Auction History, Reports, Match Results, Settings). Live Auction (shown by default) opens on a **session launcher** when no auction is currently active: NEW MOCK AUCTION / NEW LIVE AUCTION buttons, plus a "Saved Sessions" panel listing the current LIVE session (if any) and every saved MOCK practice session with a Resume/Delete action each. Starting a new LIVE auction while one already exists asks for confirmation first — the old one is archived, never silently overwritten. Once a session is active, a compact "MOCK SESSION" / "LIVE SESSION" badge and an autosave-status indicator ("Autosaved HH:MM:SS" or a prominent "SAVE FAILED") sit next to the round/progress line, and the screen otherwise looks and works exactly as before: it reveals one randomized player at a time on a large sports-broadcast-style card — real photo (all 32 canonical players now have one; a missing/unreadable photo falls back to an initials badge), name, position badge, and OVR only — lets you pick a winning team and enter a price, and records SOLD or UNSOLD (each behind a confirm step) — team budgets, squad sizes, and progress update immediately, and the same in-progress auction is still there if you navigate to Teams or Players & Setup and back, or even close and reopen the app entirely. Only SOLD is permanent: once a round's queue is exhausted, any UNSOLD players are shuffled into a new "Re-Auction Round N" queue automatically, and AUCTION COMPLETE only appears once every auction-eligible player has been sold. Team buttons are disabled and show why (e.g. "FULL" at 8/8, "HAS GK" when the current player is a goalkeeper and the team already owns one, "NEEDS GK" when this purchase would be the team's last roster slot without ever having acquired its mandatory goalkeeper, "LOW BUDGET" when a purchase would leave too little for the team's remaining required roster slots at their own minimum prices) whenever a team is not eligible to buy the current player, and each button shows its current player-aware legal maximum bid ("Max NNM") — all enforced in the service layer, not just the UI. The CURRENT BID row also shows the current player's own **BASE PRICE** (4M for a goalkeeper, 2M otherwise) — no bid or sale below it is ever accepted. If no eligible team remains for the players still unsold, the screen shows a blocked-state message instead of looping or falsely completing. Players & Setup is a real, read-only, searchable/filterable table of all 32 players plus a tournament setup-readiness check (including goalkeeper coverage). Player Cards is a separate, visual gallery of the same 32 players — a photo-forward card per player (position badge, OVR, last-season FPL points or "N/A", a CAPTAIN badge where relevant) with its own search box, an ALL/GK/DEF/MID/ATT/CAPTAINS filter, and OVR/FPL/name sorting; clicking a card opens a larger detail panel (full photo, all fields, plus the player's current auction status once a session is running) with a Back button — entirely read-only, like Players & Setup. Teams shows all four team cards (captain, budget, squad capacity, roster) — canonical data before an auction starts, live data once one is running. Auction History is a read-only, chronological transaction timeline for the current session — every SOLD/UNSOLD attempt in order (a player UNSOLD in an earlier round and later SOLD keeps both rows, never collapsed to one), with summary cards (Total Attempts, Sold, Unsold Attempts, Total Spent), search by name, filters (result/round/team), and an oldest/newest sort toggle. With no active session it shows a plain "NO ACTIVE AUCTION SESSION" message rather than starting one. Reports is the read-only auction summary/analytics dashboard for the current session — deliberately distinct from Auction History's event log: KPI cards (Total Sold, Total Spent, Avg/Median/Highest/Lowest Sale, Rounds), Most Expensive/Cheapest/Highest-Rated purchase highlights (with tie handling), FPL and OVR analytics (excluding players with no data from every average, never treating it as 0), a re-auction summary, team comparison bars (spending, remaining budget, squad size, average purchase price), and one panel per team (captain, budget, GK status, max next legal bid, and full roster with purchase prices — captains always shown as "CAPTAIN," never a "0M" purchase). Like Auction History, it shows a plain "NO ACTIVE AUCTION SESSION" message with no session active, and works identically whether the session is IN_PROGRESS, COMPLETE, or BLOCKED. Settings is the organizer configuration/diagnostics screen: tournament info, a Display/Projector panel (Fullscreen toggle — F11/Escape also work anywhere in the app — a "Remember Fullscreen" option, current resolution, and HDMI/projector connection instructions), Auction Preferences (Confirm SOLD/Confirm UNSOLD toggles, both ON by default — turning one off only skips that transaction's confirmation dialog, never any validation), a Reset App Preferences action (confirmation required; resets only these display/confirmation preferences, never auction data), Session/Save Status for whatever session is currently loaded (mode, id, status, round, SOLD count, last autosave, save location, and an Open Save Folder button), a Diagnostics panel (app/Python version, platform, player/team/photo counts, save schema version, and the same tournament setup-readiness check Players & Setup uses), a Captain Phone Bidding section with real START/STOP controls, the live LAN address, each team's PIN (organizer-only), and a per-team CONNECTED/DISCONNECTED/NOT CONNECTED status with a RESET CONNECTION button and a REGENERATE ALL PINS action, and a read-only "LOCKED TOURNAMENT RULES" summary — no core tournament rule (player/team counts, budget, squad size, GK rule, base prices, dynamic completion reserve, re-auction behavior) is ever editable from this screen.
+The project includes tests covering:
 
-### Resuming a saved auction
+- auction transactions
+- budget rules
+- roster validation
+- persistence
+- match-result accounting
+- player releases
+- refund calculation
+- second-auction bidding
+- phone authentication
+- mixed phone/manual bidding
+- final current-roster resolution
 
-Every auction autosaves to `saves/` after each SOLD, UNSOLD, or round transition — closing the app (or a crash) does not lose progress. To resume:
 
-1. Launch `python main.py` — Live Auction opens on the session launcher automatically whenever no session is currently active in memory.
-2. Under **LIVE**, click **Resume** to continue the tournament's one protected live session, or under **MOCKS**, click **Resume** next to whichever practice session you want to continue.
-3. Play continues exactly where it left off — same round, same current player, same budgets/rosters/history.
+# Captain Phone Bidding Setup
 
-A corrupt or unreadable save is labeled clearly ("SAVE CORRUPT / UNREADABLE") with only a Delete option — it's never silently loaded or auto-repaired. `saves/` is git-ignored; it is created automatically on first save and is never something you need to create by hand.
+The organizer laptop and captain phones must be connected to the same local Wi-Fi network.
 
-## Captain Phone Bidding — Local Test
+1. Launch the application.
+2. Open **Settings**.
+3. Start **Captain Phone Bidding**.
+4. Copy the displayed LAN address.
+5. Privately send each captain their team PIN.
+6. Captains open the LAN address in a mobile browser.
+7. Captains enter their PIN.
+8. Connection status appears in the desktop application.
+9. Captains place bids from their phones.
+10. The organizer controls SOLD / UNSOLD from the laptop.
 
-One captain's phone can place bids for their team over the same local Wi-Fi network as the organizer's laptop, while the organizer keeps full manual control from the desktop at all times. This requires both devices on the **same Wi-Fi network** (a phone on cellular data will not be able to reach the laptop). Each team logs in with its own 4-digit PIN — see "Four-Captain Setup" below for the full multi-captain flow; this section walks through a single phone first.
+Phone bidding is optional. The auction can always be completed entirely from the organizer laptop.
 
-1. On the laptop, launch `python main.py` and start (or resume) a MOCK or LIVE auction from Live Auction as usual.
-2. Open **Settings** and find the **Captain Phone Bidding** section.
-3. Click **START CAPTAIN BIDDING**. The status changes to RUNNING and a real **LAN Address** appears (for example `http://192.168.1.23:8765`) — use **COPY ADDRESS** if you want to text or AirDrop it to the captain instead of reading it aloud.
-4. **Windows Firewall may prompt the first time the server starts** — allow access on **Private networks only** (never Public). This app never changes firewall rules on its own; you must approve the prompt yourself.
-5. In the **CAPTAIN PINS / CONNECTIONS** list further down the same section, note the 4-digit PIN next to the team you're testing (e.g. Blackout FC) — use **COPY** if you want to send it to the captain rather than reading it aloud. These PINs are organizer-only and never shown anywhere else in the app.
-6. On the captain's phone (connected to the same Wi-Fi), open a browser and go to the LAN address from step 3.
-7. The phone shows "CALGARY VIPERS / CAPTAIN BIDDING" and "ENTER TEAM PIN." Enter the 4-digit PIN and tap **CONNECT**. The phone now shows "CONNECTED AS BLACKOUT FC" (or whichever team the PIN belongs to) — there is no team selector; the PIN alone determines identity, and the phone can bid only for that team.
-8. Back in Settings, that team's row in **CAPTAIN PINS / CONNECTIONS** now shows **CONNECTED**, and the Live Auction screen's team button for that team shows a small "PHONE CONNECTED" note.
-9. The phone now shows the current player (photo, name, position, OVR, FPL, and its own BASE PRICE — 4M for a goalkeeper, 2M otherwise), the current highest bid and leading team, the captain's own team budget/squad/max legal bid, and +1M / +2M / +5M buttons — before any bid exists, a tap submits `max(base_price, increment)`, never a bid below the player's own minimum.
-10. Bids from the phone and bids from the laptop's own Live Auction screen (the "PLACE BID" row, usable for **any** team at any time — connected, disconnected, or never logged in) both update the same **CURRENT BID / LEADING TEAM** display on the laptop and on every connected phone within about a second.
-11. When ready, the organizer presses **SOLD** on the laptop as usual — if a phone bid is currently leading, its team and amount are pre-filled into the same confirmation dialog and the same transaction logic that has always handled SOLD/UNSOLD; nothing about how a sale is recorded changes. The bid display then resets to "—" / "—" for the next player, on both the laptop and every phone.
-12. Click **STOP CAPTAIN BIDDING** in Settings when the trial (or the tournament) is over. This is safe to click even if the server was never started, and safe to start again later — connected captains simply keep their login and reconnect automatically.
 
-If phone bidding is unavailable for any reason (Wi-Fi trouble, no phone on hand, the server is OFF, a captain's PIN input is fumbled), the organizer can always finish the auction entirely from the laptop exactly as before — phone bidding is optional and never required to complete a sale.
+# Design Principles
 
-## Four-Captain Setup
+The project follows several important rules:
 
-The full tournament design supports all four captains bidding from their own phones at once, with the organizer still able to step in manually for any team at any time.
+- business logic stays outside GUI callbacks where practical
+- first-auction history remains immutable
+- second-auction history is stored separately
+- MOCK and LIVE sessions remain isolated
+- captain PINs are never stored in public repository data
+- saved LIVE tournament sessions are git-ignored
+- the organizer always retains manual auction control
+- captain phones can bid but cannot finalize transactions
 
-1. Make sure the laptop and every captain's phone are on the **same Wi-Fi network**.
-2. On the laptop, open **Settings** and click **START CAPTAIN BIDDING**.
-3. In the **CAPTAIN PINS / CONNECTIONS** list, privately give each captain their team's own 4-digit PIN — in person or via a private message, not read aloud where an opposing captain could hear it.
-4. Each captain opens the LAN address shown in Settings on their own phone and enters their PIN. Once connected, a phone is locked to that one team for the rest of the session — it cannot switch to another team without the organizer resetting that connection first.
-5. Connection status for all four teams appears live in Settings (CONNECTED / DISCONNECTED / NOT CONNECTED) — refresh by simply looking at the screen, no action needed. The Live Auction projector view shows a compact "N / 4 ACTIVE" count so the organizer always knows how many captains are currently bidding from their phones without needing to open Settings.
-6. **Manual bidding for every team remains available on the laptop at all times**, regardless of how many phones are connected — 0, 1, 2, 3, or all 4. A captain losing Wi-Fi mid-auction is not an emergency: their team simply shows DISCONNECTED, and the organizer can keep bidding on their behalf from the laptop until they reconnect.
-7. If a captain switches phones, or their session needs to be freed up for any reason, the organizer clicks **RESET CONNECTION** next to that team in Settings — this only affects that team's login, never the roster, budget, history, or current live bid. The captain can then log back in with the same PIN on the new device.
-8. If a PIN is ever compromised or the organizer wants a clean slate before the tournament, **REGENERATE ALL PINS** issues a brand-new PIN for every team and signs out every currently connected captain (confirmation required) — auction data is never affected.
-9. The organizer alone presses **SOLD** and **UNSOLD** on the laptop for every transaction, regardless of how many phones are connected — captain phones can only submit bids, never finalize a sale.
+---
 
-## How to Enter Match Results After the Auction
+# Future Development
 
-A September 2026 follow-up added **Match Results**, a new sidebar screen for the post-auction phase: the organizer enters each tournament match's final score, the app automatically awards match money (WIN 4M / DRAW 2M / LOSS 1M), and each team's current transfer budget (first-auction remaining + total match earnings) updates immediately. This is a funding tracker only — the second transfer window itself is not implemented yet.
+The main tournament workflow is complete.
 
-1. **Complete the first auction.** Match Results stays visible the whole time, but shows "FIRST AUCTION IN PROGRESS" (or "FIRST AUCTION BLOCKED" if the auction ever becomes blocked) until the auction's status is actually COMPLETE — official match-money accounting is locked until then.
-2. **Open the completed tournament record.** If you're continuing straight from a just-finished auction, it's already open. If you closed the app, reopen it, go to Live Auction, and click **Resume** next to the completed session (LIVE or MOCK) in the "Saved Sessions" panel — this reopens it in the same safe, read-only auction view as always (no SOLD/UNSOLD/bidding controls); resuming a COMPLETE session never restarts or replays it.
-3. **Navigate to Match Results** in the sidebar.
-4. **Enter scores**: pick the two different teams, type each team's goals, and click **SAVE RESULT**. The app shows the winner (or DRAW) and each team's award immediately in the Saved Match History table below.
-5. **Check the automatically updated budgets** in the Transfer Budget Tracker section — each team's card shows its First Auction Remaining, Match Earnings, and AVAILABLE TRANSFER BUDGET.
-6. **Made a mistake?** Click **EDIT** on that match's row, correct the score, and click **UPDATE RESULT** — the old award is replaced, never added to. Click **DELETE** (confirmation required) to remove a match entirely; its award disappears from both teams' totals immediately. The original first-auction remaining budget is never affected by any of this.
-7. **Close/reopen safely**: every SAVE/EDIT/DELETE autosaves immediately, exactly like SOLD/UNSOLD during the auction itself. Closing and reopening the app and resuming the same session shows every match result exactly as you left it.
-8. **Continue entering results later**, any time, across as many sessions as the tournament needs — nothing here needs to happen in one sitting.
+Possible future improvements include:
 
-## How to Prepare the Second Auction
+- additional tournament formats
+- more reusable tournament configuration
+- improved packaged Windows release
+- additional analytics
+- broader support for other recreational leagues
 
-A further September/October 2026 follow-up added **Second Auction**, a new sidebar screen (directly below Live Auction) for setting up the transfer window: the organizer selects exactly four players each team will release, the app previews each released player's refund (exactly what their team paid for them in the first auction) and each team's projected second-auction starting budget, and the organizer confirms a 16-player release pool. **This milestone is setup only** — it does not start the second auction itself, release any player's roster slot, or move any money; that comes in a later milestone.
 
-1. **Keep entering match results** in Match Results as the tournament progresses — Second Auction reads each team's current transfer budget directly from there.
-2. **Open Second Auction** in the sidebar once the first auction is COMPLETE (it shows "FIRST AUCTION IN PROGRESS" or "FIRST AUCTION BLOCKED" otherwise, exactly like Match Results).
-3. **Review current transfer budgets** at the top — each team's First Auction Remaining, Match Earnings, and Current Transfer Budget.
-4. **Select four eligible releases per team.** Each team's full 8-player roster is shown; the captain and goalkeeper are always marked **LOCKED** and cannot be selected — every other player can be checked for release, up to 4 per team. (The organizer is responsible for any FPL-based eligibility decisions from another tool; this app does not track FPL.)
-5. **Review refunds** in the Refund Preview section — each released player's refund is exactly what their team paid for them in the first auction, and each team's projected "Second Auction Starting Budget" (current transfer budget + refunds) updates immediately as you select or deselect players.
-6. **Confirm the 16-player release pool** once every team has exactly 4 selected: click **CONFIRM RELEASE LISTS** and confirm the dialog. The plan locks (read-only) and the screen shows "RELEASE PLAN CONFIRMED" / "SECOND AUCTION NOT STARTED." Made a mistake? Click **EDIT RELEASE PLAN** (confirmation required) to unlock it again — safe at this stage since the second auction hasn't started.
-7. **The second auction itself will be started in a later milestone** — this screen only prepares and persists the release plan; first-auction budgets, history, and rosters are never changed by anything here.
+## Why I Built It
 
-## How to Run the Second Auction
+This project started because I wanted to build something useful for the soccer community I play with every week.
 
-A further October 2026 follow-up implements the second auction itself, directly on top of the confirmed release plan above. First-auction budgets, history, and rosters remain exactly as the first auction left them; the second auction keeps its own separate budgets, rosters, and transaction history.
+Instead of making a standalone portfolio project with no real users, I wanted to solve an actual problem for our tournament and create something everyone could interact with during the event.
 
-1. **Complete the first auction, keep entering match results, and confirm the 16-player release plan** exactly as in "How to Prepare the Second Auction" above. The Second Auction screen now shows "RELEASE PLAN CONFIRMED" / "SECOND AUCTION NOT STARTED" with a **START SECOND AUCTION** button.
-2. **Click START SECOND AUCTION** and confirm the dialog. This applies the confirmed releases, builds the 16-player auction pool, and sets each team's starting budget to its current transfer budget plus its own release refunds — frozen from this point on, even if more match results are entered later.
-3. **Run SOLD/UNSOLD** exactly like the first auction: pick a buying team, enter a price (or use the +1M/+2M/+5M quick buttons), and click **SOLD**, or click **UNSOLD** to send the current player to a re-auction round. Every team's remaining second-auction budget and current squad size (starting at 4/8, since the captain, goalkeeper, and two retained players stay from the first auction) update immediately.
-4. **Re-auction unresolved players**: any player marked UNSOLD returns automatically in a new re-auction round once the current round's queue is exhausted — exactly like the first auction. If no team can legally afford any remaining player, the screen shows "SECOND AUCTION BLOCKED" instead of looping.
-5. **Finish all squads at 8 players.** The second auction completes automatically once all 16 released players have been sold — every team ends at exactly 8 players, still with its original captain and goalkeeper.
-6. **Close and reopen safely at any point**, including mid-auction — every SOLD/UNSOLD autosaves immediately, and resuming the same session (LIVE or MOCK) continues exactly where it left off: same round, same current player, same budgets/rosters/transaction history. A COMPLETE second auction reopens as COMPLETE; it is never replayed or reset.
-7. **Review the Second Auction Transaction History table**, visible on the LIVE/COMPLETE/BLOCKED views, for a full record of every second-auction SOLD/UNSOLD attempt, each released player's previous team and original first-auction price alongside their new second-auction team and price.
-
-## Second Auction — Captain Phone Bidding
-
-A final October 2026 follow-up extended **Captain Phone Bidding** (the same server, same PIN login, same mixed-mode rules already described in "Captain Phone Bidding — Local Test" and "Four-Captain Setup" above) to cover the second auction as well — no second server, no new PINs, no re-login required when the second auction starts.
-
-1. **Start the second auction** as described in "How to Run the Second Auction" above.
-2. **Open Settings** — the Captain Phone Bidding section now shows **Auction Phase: Second Auction** once the second auction is running (it reads "First Auction" at every other time, including the whole transfer-window setup phase).
-3. **Click START CAPTAIN BIDDING** if the server isn't already running (if it was already running from the first auction, it keeps running — nothing needs to be restarted).
-4. **Share the LAN URL** shown in Settings with each captain, exactly as before.
-5. **Captains log in with their team's 4-digit PIN** on their phone — the same PIN as the first auction. A captain who was already logged in from the first auction stays logged in automatically; no one needs to re-enter anything.
-6. **Connection status appears directly on the Second Auction screen itself**, not only in Settings: a permanent "Captain Connections" panel lists all four teams with a live CONNECTED / RECENTLY ACTIVE / MANUAL-OFFLINE status and an "N / 4 CONNECTED" headline, so the organizer can see at a glance how many captains are bidding from their phones.
-7. **Captains bid** from their phones exactly as in the first auction — current player, previous team, original first-auction price, their team's second-auction budget, and the current highest bid/leading team all appear automatically, and the usual +1M/+2M/+5M quick-bid buttons submit at least the player's own base price.
-8. **The organizer alone controls SOLD/UNSOLD** — captain phones never get a SOLD or UNSOLD button. If a captain's phone placed the current leading bid, pressing SOLD on the laptop uses that bid and team automatically; the organizer can also always bid manually for any team, connected or not, from the Second Auction screen itself.
-9. **The Teams screen updates immediately** after every second-auction SOLD — once the second auction has started, Teams shows each team's *current* active roster and second-auction budget, not the original first-auction squad.
-10. **After the second auction completes, Teams shows the final squads**: every team at 8/8, its original captain and goalkeeper, newly purchased players marked with a gold **NEW** badge, and its final remaining budget — the **VIEW FINAL TEAMS** button on the Second Auction completion screen jumps straight there.
-
-## Windows Test Build
-
-**This is an RC2 test build to verify packaging before final roster lock — it is not the final v1.0 tournament release.** It lets the app run on the tournament laptop without installing Python or using an editor/terminal. RC1 fixed a packaged-only bug found in RC0 where Captain Phone Bidding's server could hang after the organizer had already used the app for a bit, but it still hung on the organizer's own laptop; RC2 adds a hard startup timeout so the server can never again get stuck showing STARTING forever — after 20 seconds it fails clearly with a specific reason instead, and a retry (or the console-attached RC2 Debug build) can be used to diagnose further (see "RC1 Real-Laptop Server Start Hang — Targeted Debug Pass" in `PROJECT_CONTEXT.md`). RC0 and RC1 are kept alongside RC2 under `dist/` for comparison, but RC2 is what you should actually use.
-
-### Building it
-
-```
-python -m pip install -r requirements-build.txt
-build_windows.bat
-```
-
-This produces:
-
-```
-dist/Calgary Vipers Auction 2026 RC2/
-    Calgary Vipers Auction 2026.exe
-    _internal/            (bundled Python, libraries, assets/, data/)
-```
-
-`build_windows.bat` removes only *this RC's own* `build/` and `dist/Calgary Vipers Auction 2026 RC2/` (or `dist/Calgary Vipers Auction 2026 RC2 Debug/`) folder before rebuilding — it never touches an earlier RC's folder under `dist/` (e.g. RC0, RC1), and never touches `saves/`, `config/`, or any canonical data, all of which live at the repository root. Set `CVA_DEBUG_CONSOLE=1` before running the script to instead produce a console-attached debug variant, output to `dist/Calgary Vipers Auction 2026 RC2 Debug/` — its console window (and the log file) show the fine-grained `SERVER_START_XX`/`SERVER_THREAD_XX`/`WATCHER_XX`/`LAN_XX` startup trace, useful if Captain Bidding ever fails to start on a specific machine. The normal build is windowed with no visible console, output to `dist/Calgary Vipers Auction 2026 RC2/`, and is what you should hand to the organizer.
-
-### Launching it
-
-Double-click `Calgary Vipers Auction 2026.exe` inside the `dist\Calgary Vipers Auction 2026 RC2\` folder. No Python installation, VS Code, or terminal command is needed on the machine that runs it — only on the machine that builds it.
-
-### Writable data (config/, saves/, logs/)
-
-The packaged app creates `config/`, `saves/`, and `logs/` **beside the .exe** the first time it needs them (never inside the read-only `_internal/` folder) — this is where PIN configuration (`config/captain_bidding.json`), app preferences (`config/user_preferences.json`), MOCK/LIVE auction saves (`saves/`), and a small diagnostic log (`logs/calgary_vipers_auction.log`) live for the packaged build, exactly mirroring source-mode behavior. They persist across closing and reopening the .exe, and an existing save or PIN file is never overwritten on relaunch. To test: create a MOCK session, close the app, reopen the .exe, and resume — the session should be exactly where you left it. The log file never contains a PIN or a captain's auth token; open it in Notepad any time to see recent app startup / captain-bidding server activity without needing a debug build.
-
-### Captain Phone Bidding from the packaged build
-
-Works identically to running from source: open Settings, click **START CAPTAIN BIDDING**. The status badge shows STARTING briefly, then RUNNING with a real LAN address — the window stays fully responsive the whole time. If startup ever gets stuck, it now **cannot stay STARTING forever**: after 20 seconds it shows **"SERVER START FAILED"** with the specific stage it stopped at — click START again (waiting a few seconds after a FAILED result before retrying is safest). If it still won't start after a retry, run the `RC2 Debug` build instead: its console window (and `logs/calgary_vipers_auction.log`) show exactly which startup stage it never got past, which pinpoints the problem for further diagnosis. Then follow the same steps as "Captain Phone Bidding — Local Test" / "Four-Captain Setup" above. **Windows Firewall may prompt the first time the packaged .exe starts the server** — allow access on **Private networks only** (never Public); this app never changes firewall rules on its own. If the server shows RUNNING but a phone still can't connect, this Firewall prompt (or having missed it) is the most likely cause.
-
-### Known limitations of this RC2 build
-
-- No application icon yet (no suitable `.ico` exists — a missing icon is preferred over converting one poorly for this build).
-- Not code-signed — Windows SmartScreen may show an "unrecognized app" warning on first run, same as any unsigned executable; choose "More info" → "Run anyway" if you built it yourself.
-- Only tested so far on the machine it was built on — test it on the actual tournament laptop before relying on it on tournament day.
-
-## Development rules
-
-- Read `PROJECT_CONTEXT.md` before changing the repository.
-- Keep business logic independent from GUI callbacks.
-- Treat `data/settings.json` as the source for configurable tournament values.
-- Load the application name, branding name, header title, theme, and logo path from the `branding` settings object; do not hard-code them into future UI widgets.
-- Keep Calgary Vipers separate from the four auction teams.
-- Do not auction captains or reduce budgets for captain assignments.
-- Update tests and `PROJECT_CONTEXT.md` whenever rules or implementation decisions change.
+Seeing the system go from an idea, to development and testing, to successfully running both of our real auctions was the most rewarding part of the project.
