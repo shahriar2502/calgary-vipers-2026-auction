@@ -1,36 +1,11 @@
-"""Captain Phone Bidding — a lightweight local FastAPI/uvicorn server so
-a captain's phone browser can log in with a team PIN, view the current
-player and the live bid, and submit bids — running on the local Wi-Fi
-network alongside the CustomTkinter desktop app.
+"""Local server for captain phone bidding.
 
-The organizer laptop remains the sole authority: this server can only
-read `AuctionSession` state and call `AuctionSession.place_live_bid`
-(the exact same entry point the desktop's own bid buttons use — see
-`services/live_bid_service.py`). It has no route that sells, marks
-unsold, advances the queue, or otherwise mutates a Team/Player directly;
-those remain organizer-only actions performed from the desktop UI via
-`services/auction_service.py`.
+Captains authenticate with team-specific PINs and can submit bids from
+phones connected to the same local network as the organizer laptop.
 
-Mixed mode is the permanent product design (Phase 2): any number of
-captain phones from 0 to 4 may be connected at once, and the organizer
-can always bid manually for any team — connected, disconnected, or never
-logged in — from the desktop's own bid controls. This server never
-disables anything on the desktop side; it only adds an optional second
-way to submit the exact same kind of bid.
-
-Team identity for a phone bid comes only from its authenticated session
-token (`services/captain_auth_service.py`) — a request body can never
-specify which team it is bidding for, so an authenticated Darkstar
-browser cannot bid on Blackout's behalf no matter what it sends.
-
-Runs in a background thread (uvicorn's own documented "serve in a
-thread" pattern: build a `Server`, disable its signal handlers since
-only the main thread may install those, run it in a daemon thread, and
-flip `should_exit` to stop it) so it never blocks Tk's mainloop and never
-touches a CTk/Tk widget directly — the Live Auction screen instead polls
-`AuctionSession`/this server's own state via `after(...)`, matching the
-project's existing "never call widget.configure from a non-Tk thread"
-rule.
+The server handles authentication, auction-state viewing, and bid submission.
+SOLD and UNSOLD actions remain organizer-only desktop controls, and manual
+desktop bidding remains available regardless of phone connectivity.
 """
 
 from __future__ import annotations
@@ -67,31 +42,8 @@ DEFAULT_PORT = 8765
 # this app that didn't fully exit) — see CaptainBiddingServer._reserve_port.
 PORT_FALLBACK_RANGE = 10
 
-# How long STARTING is allowed to last before it is forced to FAILED.
-# Enforced TWICE, independently (see the "RC2 targeted debug pass" note
-# below): once by a background watcher thread (fast path — the server
-# thread and its own async startup are both healthy and simply slow),
-# and once directly from the Tk main thread's own poll loop (the
-# bulletproof backstop — fires even if *no* background thread ever gets
-# scheduled again after `start()` returns, which is exactly what a real
-# organizer laptop's log showed: STARTING for ~2 minutes with no further
-# log line at all, not even the watcher's own timeout message). The Tk
-# main thread was still responsive throughout that report (it processed
-# the STOP click), so driving the backstop off Tk's own `after()` loop —
-# already proven to keep running — is what actually guarantees STARTING
-# can never last forever, regardless of what the background threads do.
-#
-# Widened from 10s during the RC2 targeted debug pass: this project's
-# own test suite reproduced a real (if rare) slow event-loop bootstrap —
-# a captain-bidding server started for the first time in a process that
-# had already built and torn down many CustomTkinter dialogs occasionally
-# took longer than 10s to reach `server.started`, then *did* complete on
-# its own a little later. Abandoning it at 10s and retrying risks a port
-# collision with that now-orphaned-but-still-finishing attempt (confirmed
-# directly: a retry's own bind then failed with "address already in use"
-# because the first attempt had just succeeded). 20s gives the rare slow
-# case a real chance to finish on its own before anything gives up on it,
-# while still being a firm, bounded ceiling — never infinite.
+# Bound server startup so a failed launch cannot leave the UI permanently
+# stuck in the STARTING state.
 _STARTUP_TIMEOUT_SECONDS = 20.0
 
 _PLAYERS_PHOTO_DIR = (ROOT_DIR / "assets" / "players").resolve()
@@ -555,13 +507,7 @@ class CaptainBiddingServer:
         self._force_startup_timeout()
 
     def check_startup_timeout(self) -> None:
-        """The bulletproof backstop (RC2 targeted debug pass): called
-        from Settings' own Tk-`after()`-driven poll (never a background
-        thread), so it fires purely off Tk's main-thread timer — proven
-        to keep running even when a real organizer's log showed both the
-        server thread and the watcher thread going silent for ~2 minutes
-        with no further trace line at all. A cheap no-op unless `state`
-        is STARTING and the budget has actually elapsed."""
+        """Fail a server launch that remains in STARTING beyond the timeout."""
         with self._state_lock:
             if self._state != ServerLifecycleState.STARTING or self._starting_since is None:
                 return
@@ -837,14 +783,11 @@ class CaptainBiddingServer:
 
         @app.post("/api/bid")
         def api_bid(payload: BidRequest, resolved_token: str | None = Depends(resolve_token)) -> dict:
-            """Second Auction — Milestone 3: routes to whichever auction
-            phase is currently active — the second auction's own
-            `place_second_auction_live_bid` once it has been started
-            (IN_PROGRESS/COMPLETE/BLOCKED), the unchanged first-auction
-            `place_live_bid` otherwise. Team identity still comes only
-            from the authenticated token in both cases — never the
-            request body (see this module's docstring) — so this routing
-            can never be used to bid for the wrong team in either phase."""
+            """Submit a bid to the currently active auction phase.
+
+            Team identity always comes from the authenticated captain token,
+            never from the request body.
+            """
             if not self.session.started:
                 raise HTTPException(status_code=409, detail="No active auction session.")
             team_id = self.auth.authenticate(resolved_token)
