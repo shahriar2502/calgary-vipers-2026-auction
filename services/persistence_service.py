@@ -49,7 +49,7 @@ from pathlib import Path
 from models.auction import Auction
 from models.match_result import MatchResult
 from models.player import Player
-from models.second_auction import SecondAuctionSetup
+from models.second_auction import SecondAuctionSetup, SecondAuctionState
 from models.team import Team
 from services.auction_session_service import AuctionSession, SessionMode
 from services.runtime_paths import WRITABLE_ROOT
@@ -176,6 +176,12 @@ def build_snapshot(session: AuctionSession, updated_at: str) -> dict:
         # `restore_session` treats that identically to a fresh DRAFT setup
         # with no releases selected. No schema_version bump needed.
         "second_auction_setup": session.second_auction_setup.to_dict(),
+        # Second Auction — Milestone 2 (October 2026): additive, optional
+        # key, exactly like "second_auction_setup" above — an older save
+        # file has no "second_auction_state" key at all, and
+        # `restore_session` treats that identically to a fresh
+        # NOT_STARTED state. No schema_version bump needed.
+        "second_auction_state": session.second_auction_state.to_dict(),
     }
 
 
@@ -341,6 +347,21 @@ def _reconstruct_second_auction_setup(data: dict) -> SecondAuctionSetup:
         return SecondAuctionSetup()
 
 
+def _reconstruct_second_auction_state(data: dict) -> SecondAuctionState:
+    """Best-effort, never-raising — same rationale as
+    `_reconstruct_second_auction_setup` above: a missing key (every save
+    file from before Milestone 2) or a malformed value falls back to a
+    fresh NOT_STARTED state, rather than ever failing the whole session
+    load."""
+    raw = data.get("second_auction_state")
+    if not isinstance(raw, dict):
+        return SecondAuctionState()
+    try:
+        return SecondAuctionState.from_dict(raw)
+    except (TypeError, ValueError, KeyError):
+        return SecondAuctionState()
+
+
 def restore_session(data: dict) -> AuctionSession:
     """Validate `data` (structurally, per-model, and cross-referentially)
     and reconstruct an `AuctionSession` equivalent to a freshly-created
@@ -356,6 +377,7 @@ def restore_session(data: dict) -> AuctionSession:
         teams=teams,
         match_results=_reconstruct_match_results(data),
         second_auction_setup=_reconstruct_second_auction_setup(data),
+        second_auction_state=_reconstruct_second_auction_state(data),
         mode=SessionMode(data["session_mode"]),
         session_id=data["session_id"],
         name=data.get("name"),

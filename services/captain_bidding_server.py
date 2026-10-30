@@ -50,12 +50,15 @@ from pydantic import BaseModel
 
 from models.auction import AuctionStatus
 from models.player import Player, player_base_price
+from models.second_auction import SecondAuctionState, SecondAuctionStatus
 from models.team import Team
+from services import second_auction_bidding_service as sabs
 from services.app_logging import log_event
 from services.auction_service import AuctionTransactionError, maximum_legal_bid
 from services.auction_session_service import AuctionSession
 from services.captain_auth_service import CaptainAuthService
 from services.config_service import ROOT_DIR
+from services.second_auction_bidding_service import SecondAuctionBiddingError
 
 DEFAULT_PORT = 8765
 
@@ -631,10 +634,27 @@ class CaptainBiddingServer:
         }
 
     def build_state(self, token: str | None) -> dict:
+        """Dispatches to the second auction's own state builder once it
+        has been started (IN_PROGRESS/COMPLETE/BLOCKED) — see Second
+        Auction — Milestone 3's "do not accidentally return first-auction
+        remaining budgets during second auction" requirement — and to the
+        unchanged first-auction builder otherwise. Both return the same
+        core key *names* (`current_player`/`current_bid`/
+        `leading_team_name`/`own_team`/`authenticated`/`bidding_enabled`/
+        `round_number`/`session_invalid`) so `assets/captain_bidding/
+        phone.html` only needs to branch on the additive `auction_phase`
+        field for the handful of fields that differ, never reimplement
+        its whole rendering path per phase.
+        """
         session = self.session
         if not session.started:
             return {"no_active_session": True}
 
+        if session.second_auction_state.is_initialized:
+            return self._build_second_auction_state(token, session, session.second_auction_state)
+        return self._build_first_auction_state(token, session)
+
+    def _build_first_auction_state(self, token: str | None, session: AuctionSession) -> dict:
         auction = session.auction
         current_player = session.current_player
         leading_team = session.leading_team
@@ -669,6 +689,7 @@ class CaptainBiddingServer:
 
         return {
             "no_active_session": False,
+            "auction_phase": "FIRST_AUCTION",
             "session_mode": session.mode.value if session.mode else None,
             "auction_status": auction.status.value,
             "round_number": session.round_number,
@@ -681,6 +702,87 @@ class CaptainBiddingServer:
             "team_name": team_name,
             "own_team": own_team_payload,
             "session_invalid": session_invalid,
+        }
+
+    @staticmethod
+    def _second_auction_own_team_payload(
+        state: SecondAuctionState, team: Team, current_player: Player | None
+    ) -> dict:
+        roster_size = sabs.team_roster_size(state, team.id)
+        remaining_budget = sabs.team_remaining_budget(state, team.id)
+        max_legal = max(sabs.team_max_legal_bid(state, team), 0)
+        eligible = current_player is not None and sabs.team_can_bid_for_player(state, team, current_player)
+        return {
+            "id": team.id,
+            "name": team.name,
+            "remaining_budget": remaining_budget,
+            "roster_size": roster_size,
+            "max_squad_size": team.max_squad_size,
+            "maximum_legal_bid": max_legal,
+            "eligible": eligible,
+            "ineligibility_reason": None if eligible else sabs.team_ineligibility_reason(state, team),
+        }
+
+    def _build_second_auction_state(
+        self, token: str | None, session: AuctionSession, state: SecondAuctionState
+    ) -> dict:
+        players_by_id = {player.id: player for player in session.players}
+        current_player_id = state.current_player_id
+        current_player = players_by_id.get(current_player_id) if current_player_id is not None else None
+
+        current_player_payload = None
+        if current_player is not None:
+            pool_entry = sabs.release_pool_lookup(
+                session.teams, session.second_auction_setup, players_by_id
+            ).get(current_player.id)
+            photo_url = f"/photos/{Path(current_player.photo_path).name}" if current_player.photo_path else None
+            current_player_payload = {
+                "full_name": current_player.full_name,
+                "position": current_player.position.value,
+                "overall_rating": current_player.overall_rating,
+                "fpl_display": _fpl_display(current_player.last_season_fpl_points),
+                "photo_url": photo_url,
+                "base_price": player_base_price(current_player),
+                "previous_team_name": pool_entry.previous_team.name if pool_entry is not None else None,
+                "original_first_auction_price": pool_entry.original_price if pool_entry is not None else None,
+            }
+
+        leading_team = (
+            next((team for team in session.teams if team.id == state.leading_team_id), None)
+            if state.leading_team_id is not None
+            else None
+        )
+
+        team_id = self.auth.authenticate(token)
+        session_invalid = token is not None and team_id is None
+
+        own_team_payload = None
+        team_name = None
+        if team_id is not None:
+            own_team = next((team for team in session.teams if team.id == team_id), None)
+            if own_team is not None:
+                own_team_payload = self._second_auction_own_team_payload(state, own_team, current_player)
+                team_name = own_team.name
+
+        resolved = len(sabs.sold_player_ids(state))
+        total = len(state.released_player_ids)
+
+        return {
+            "no_active_session": False,
+            "auction_phase": "SECOND_AUCTION",
+            "session_mode": session.mode.value if session.mode else None,
+            "auction_status": state.status.value,
+            "round_number": state.round_number,
+            "bidding_enabled": state.status == SecondAuctionStatus.IN_PROGRESS and current_player is not None,
+            "current_player": current_player_payload,
+            "current_bid": state.current_bid,
+            "leading_team_name": leading_team.name if leading_team is not None else None,
+            "authenticated": team_id is not None,
+            "team_id": team_id,
+            "team_name": team_name,
+            "own_team": own_team_payload,
+            "session_invalid": session_invalid,
+            "progress": {"resolved": resolved, "total": total},
         }
 
     # ------------------------------------------------------------------
@@ -735,15 +837,29 @@ class CaptainBiddingServer:
 
         @app.post("/api/bid")
         def api_bid(payload: BidRequest, resolved_token: str | None = Depends(resolve_token)) -> dict:
+            """Second Auction — Milestone 3: routes to whichever auction
+            phase is currently active — the second auction's own
+            `place_second_auction_live_bid` once it has been started
+            (IN_PROGRESS/COMPLETE/BLOCKED), the unchanged first-auction
+            `place_live_bid` otherwise. Team identity still comes only
+            from the authenticated token in both cases — never the
+            request body (see this module's docstring) — so this routing
+            can never be used to bid for the wrong team in either phase."""
             if not self.session.started:
                 raise HTTPException(status_code=409, detail="No active auction session.")
             team_id = self.auth.authenticate(resolved_token)
             if team_id is None:
                 raise HTTPException(status_code=401, detail="Not authenticated. Please log in again.")
-            try:
-                result = self.session.place_live_bid(team_id, payload.amount)
-            except AuctionTransactionError as exc:
-                raise HTTPException(status_code=409, detail=str(exc)) from exc
+            if self.session.second_auction_state.is_initialized:
+                try:
+                    result = self.session.place_second_auction_live_bid(team_id, payload.amount)
+                except SecondAuctionBiddingError as exc:
+                    raise HTTPException(status_code=409, detail=str(exc)) from exc
+            else:
+                try:
+                    result = self.session.place_live_bid(team_id, payload.amount)
+                except AuctionTransactionError as exc:
+                    raise HTTPException(status_code=409, detail=str(exc)) from exc
             return {
                 "accepted": result.accepted,
                 "reason": result.reason,

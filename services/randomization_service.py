@@ -19,6 +19,19 @@ from models.player import Player
 EXPECTED_ELIGIBLE_PLAYER_COUNT = 28
 
 
+def shuffle_player_ids(ids: Iterable[int], seed: int | None = None) -> list[int]:
+    """Randomize the order of `ids` — the one shuffle primitive shared by
+    `create_auction_queue` below and the second-auction bidding engine's
+    own pool/re-auction-round shuffling (see services/second_auction_
+    bidding_service.py), so queue randomization is never duplicated
+    across the two auctions. With a seed, the same ids and seed always
+    produce the same order; without one, ordering uses normal randomness.
+    """
+    shuffled = list(ids)
+    random.Random(seed).shuffle(shuffled)
+    return shuffled
+
+
 def create_auction_queue(
     players: Iterable[Player],
     seed: int | None = None,
@@ -58,8 +71,7 @@ def create_auction_queue(
         )
 
     eligible_ids = [player.id for player in eligible]
-    random.Random(seed).shuffle(eligible_ids)
-    return eligible_ids
+    return shuffle_player_ids(eligible_ids, seed=seed)
 
 
 def create_auction(

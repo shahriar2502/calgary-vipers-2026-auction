@@ -163,6 +163,8 @@ Final FPL Correction — September 2026 = COMPLETE — Shadman Sakib/Rhishik Roy
 First Auction Rules V2 — September 2026 = COMPLETE — GK/non-GK base prices (4M/2M) and a player-aware dynamic completion reserve replaced the flat 1M minimum/reserve; a team may finish the first auction with 0M, and its leftover budget is preserved for future transfer activity; not the final v1.0 release.
 Post-Auction Match Results + Transfer Budget Tracker — September 2026 = COMPLETE — new Match Results screen: organizer match-score entry, automatic WIN/DRAW/LOSS money awards, and a derived transfer-budget ledger built on top of each team's untouched first-auction remaining budget; not the second transfer window itself, not the final v1.0 release.
 Second Auction — Milestone 1: Transfer Window Setup — September/October 2026 = COMPLETE — new Second Auction screen: manual 4-per-team release selection with captain/GK protection, original-first-auction-purchase-price refund preview, and a confirmable 16-player release pool; does not implement second-auction bidding itself, not the final v1.0 release.
+Second Auction — Milestone 2: Second-Auction Bidding Engine — October 2026 = COMPLETE — the second auction itself: initializes a 16-player pool and frozen per-team starting budgets from the confirmed Milestone 1 release plan, runs its own SOLD/UNSOLD/re-auction cycle with a second-auction-specific budget reserve rule, grows each team's roster from 4 retained players back to 8, and keeps its own separate transaction history; the first auction's Team/Player/Auction objects are never mutated; second-auction captain phone bidding is not implemented yet; not the final v1.0 release.
+Second Auction — Milestone 3: Captain Phone Bidding + Current Team View + UI Polish — October 2026 = COMPLETE — the shared captain-bidding server now routes to the second auction's own live-bid state once it has started (same PIN login, same mixed-mode philosophy, organizer still sole SOLD/UNSOLD authority); Teams now shows the actual current/final tournament rosters once the second auction starts, derived from SecondAuctionState rather than any mutated first-auction field; the Second Auction LIVE screen gained a premium visual hierarchy and a permanent four-team Captain Connections panel; not the final v1.0 release.
 
 ## Completed in Milestone 1
 
@@ -847,6 +849,134 @@ New: `tests/test_second_auction.py` (6 tests — the `SecondAuctionSetup` model'
 ### Full regression
 
 `python -m pytest -q` — 1014 passed, 6 skipped, 0 failed when run excluding `tests/test_captain_bidding_server.py` (193s), plus that file's own 71 tests passing cleanly (71 passed, 25.66s) when run by itself. That file hangs only when executed back-to-back with the rest of the full suite in one process — a pre-existing, order-dependent environment issue unrelated to this ticket (nothing here touches networking, threading, or the phone-bidding server); it does not reproduce when the file is run alone. All 69 new second-auction tests pass. Zero regressions against the pre-ticket 1016/6/0 baseline.
+
+## Second Auction — Milestone 2: Second-Auction Bidding Engine — October 2026
+
+**The second auction itself.** Builds directly on Milestone 1's confirmed release plan: initializes a 16-player pool and frozen per-team starting budgets, then runs its own manual-organizer SOLD/UNSOLD/re-auction cycle until every team is back to 8 players. Second-auction captain phone bidding, a transfer-pool for a *third* auction, FPL eligibility, and standings remain explicit future milestones.
+
+### SIDEBAR / SCREEN STATE MACHINE
+
+No new sidebar entry — the existing **Second Auction** screen now has five states, switched on `session.second_auction_state.status`: TRANSFER WINDOW SETUP (Milestone 1, DRAFT), RELEASE PLAN CONFIRMED / SECOND AUCTION NOT STARTED (Milestone 1 view plus a new **START SECOND AUCTION** button), SECOND AUCTION LIVE (`IN_PROGRESS`), SECOND AUCTION COMPLETE, and SECOND AUCTION BLOCKED. The Milestone 1 setup/confirm view is only ever shown while `second_auction_state.status == NOT_STARTED`; once started, it takes over the screen entirely.
+
+### INITIALIZATION REQUIREMENTS
+
+`AuctionSession.start_second_auction()` → `services/second_auction_bidding_service.initialize_second_auction()` requires, defensively re-checked even though Milestone 1's own rules already guarantee them: first auction `COMPLETE`; `second_auction_setup.is_confirmed`; exactly `MAX_RELEASES_PER_TEAM * team_count` (16) released players with no duplicates; every released player actually on the releasing team's first-auction roster; no captain or goalkeeper anywhere in the pool. Any failure raises `SecondAuctionBiddingError` and leaves everything — `second_auction_state`, every `Team`, every `Player` — completely unchanged. Starting the second auction a second time is rejected the same way.
+
+### RELEASE APPLICATION / ROSTER TRANSITION (8 → 4 → 8)
+
+At initialization, each team's "current tournament roster" (`SecondAuctionState.active_rosters_by_team[team.id]`) is set to its 4 *retained* first-auction players (`[pid for pid in team.roster if pid not in setup.selections_for(team.id)]`) — always the captain, the goalkeeper, and 2 others, since only non-locked players could ever have been released. `Team.roster` itself (the original, permanent first-auction squad) is never read-modified — it is simply never touched by anything in this milestone, so it remains the authoritative historical record forever. As second-auction SOLD transactions happen, `active_rosters_by_team[team.id]` grows back toward 8; `Team.roster` stays exactly as the first auction left it.
+
+### STARTING BUDGET HANDLING (frozen at initialization)
+
+```
+second_auction_starting_budget = current_transfer_budget + selected_release_refunds
+```
+computed once per team via the *existing* `services/second_auction_service.build_all_release_previews` (never a second formula) and copied into `SecondAuctionState.starting_budgets_by_team`/`remaining_budgets_by_team` at initialization. From that moment on, a new match result entered via Match Results **never** retroactively changes it — the ticket's own "once second auction starts, starting funding is locked" requirement, verified directly (adding a match result after `start_second_auction()` leaves `starting_budgets_by_team` byte-identical).
+
+### RESERVE / MAX-BID RULE (second-auction-specific — not the first auction's formula)
+
+`services/second_auction_bidding_service.py` deliberately does **not** reuse `Team.maximum_legal_bid` (the first auction's goalkeeper-aware dynamic reserve). Every second-auction team already has its mandatory goalkeeper (GKs are never released) and every pool player is outfield (GKs are never released either), so the reserve only ever needs to cover the remaining roster slots at `OUTFIELD_BASE_PRICE` (2M) each:
+```
+reserve = max(remaining_slots_after_purchase, 0) * OUTFIELD_BASE_PRICE
+max_legal_bid = remaining_budget - reserve
+```
+Matches the ticket's own worked examples exactly: 4/8 roster with 20M → reserve 3×2M=6M → max bid 14M; 7/8 roster → reserve 0 → the entire remaining budget is legal for the final slot.
+
+### SOLD BEHAVIOR
+
+`AuctionSession.sell_second_auction_player()` → `process_second_auction_sale()` validates (auction active, current player unresolved, player in the confirmed pool, team roster space, price ≥ base price, price ≤ second-auction max legal bid) before mutating anything. On success it deducts `SecondAuctionState.remaining_budgets_by_team[team.id]`, appends the player id to `active_rosters_by_team[team.id]`, and appends a `SecondAuctionHistoryEntry`. It never calls `services/auction_service.process_sale`, never touches `Team.remaining_budget`/`roster`/`auction_spending`, and never touches `Player.sold_price`/`sold_to`/`auction_status` — a player's first-auction sale record is permanently frozen and untouched by their second-auction sale.
+
+### UNSOLD / RE-AUCTION
+
+`mark_second_auction_player_unsold()` records an UNSOLD history entry and changes no budget or roster — exactly the first auction's own "UNSOLD is never permanent" philosophy, reimplemented independently for the second auction's own queue/round state (`SecondAuctionState.queue`/`current_queue_position`/`round_number`). Once a round's queue is exhausted, any still-unsold released player returns in a freshly shuffled re-auction round (`services/randomization_service.shuffle_player_ids`, the same shuffle primitive `create_auction_queue` itself now calls) — unless no team can legally afford any remaining player, in which case the second auction becomes `BLOCKED` (checked once per round transition, never an unbounded loop) rather than stalling forever.
+
+### SECOND-AUCTION HISTORY (separate from the first auction's own)
+
+`SecondAuctionState.history: list[SecondAuctionHistoryEntry]` is a complete, independent transaction log — sequence, player, previous team (resolved via `services/second_auction_service.build_release_pool`, never duplicated as separate tracking), the player's original first-auction price (copied once per entry for audit, since `Player.sold_price` itself is never consulted again after initialization), SOLD/UNSOLD status, the second-auction buying team/price, and round number. `Auction.history` (the first auction's own log) is never appended to, read-modified, or merged with this one. The Second Auction screen displays this log directly in its LIVE/COMPLETE/BLOCKED views ("Second Auction Transaction History").
+
+### FIRST-AUCTION IMMUTABILITY
+
+Verified directly, both immediately after initialization and after running a full second auction to COMPLETE: every `Team.remaining_budget`/`roster`/`auction_spending`, every `Player.sold_price`/`sold_to`/`auction_status`, and `Auction.history`/`Auction.status` are byte-for-byte unchanged. `Auction.status` is never set to anything other than `COMPLETE` by this milestone.
+
+### PERSISTENCE / RESUME
+
+`AuctionSession.second_auction_state: SecondAuctionState` is persisted as an always-present, additive `"second_auction_state"` snapshot key (`services/persistence_service.py`), parsed leniently on load (`_reconstruct_second_auction_state`): a missing key (every pre-Milestone-2 save) or malformed value falls back to a fresh `NOT_STARTED` state rather than ever failing the whole session load — identical mechanism to `second_auction_setup`/`match_results`. No `SCHEMA_VERSION` bump needed. Every field needed to resume mid-auction exactly where it left off persists: `status`, `queue`, `current_queue_position`, `round_number`, `released_player_ids`, `starting_budgets_by_team`, `remaining_budgets_by_team`, `active_rosters_by_team`, `history`, `random_seed`, `initialized_at`/`completed_at`. A COMPLETE second auction reloads as COMPLETE (it is never silently reopened). There is deliberately **no** persisted live-bid/"current bid"/"leading team" concept (unlike the first auction's `Auction.current_bid`/`leading_team_id`) — this milestone is manual-organizer-only with no concurrent-bid race to arbitrate, so the organizer's in-progress team selection/typed price live only in the screen itself, never in `SecondAuctionState`.
+
+### CONFIRMED-PLAN LOCKING
+
+`unlock_second_auction_release_plan()` now additionally raises once `second_auction_state.is_initialized` — editing a release plan after its frozen starting budgets have already been built would silently invalidate them, so **EDIT RELEASE PLAN** is only ever safe (and only ever shown) while the second auction has not started.
+
+### MOCK/LIVE ISOLATION
+
+`second_auction_state` lives on the exact same per-session snapshot as `second_auction_setup`/`match_results` — verified directly that two sessions of different modes, each started/initialized/played independently, never see each other's second-auction budgets/rosters/history after save/reload.
+
+### UI FLOW
+
+SECOND AUCTION LIVE shows: strong title "SECOND AUCTION — TRANSFER WINDOW"; round/progress row; a SOLD/UNSOLD feedback banner; a simplified player card (photo if available, name, position, previous team, original first-auction price, second-auction base price); a team-status row (remaining second-auction budget, roster count, max legal bid, FULL/LOW BUDGET ineligibility tags, click-to-select) visually consistent with Live Auction's own team buttons; a manual price-entry row with the same `+1M/+2M/+5M` quick buttons; SOLD/UNSOLD action buttons; and the transaction-history table. No captain-bidding/phone-connection indicator is shown anywhere on this screen — second-auction phone bidding does not exist yet.
+
+### TESTS
+
+New: `tests/test_second_auction_bidding_service.py` (57 tests — initialization/bidding/unsold-re-auction/history/completion, numbered to match the ticket's own lists), `tests/test_second_auction_bidding_session.py` (16 tests — `AuctionSession` methods, persistence/resume, interruption/resume, confirmed-plan locking), `tests/test_second_auction_bidding_screen.py` (15 tests — the five-state screen, numbered to match the ticket's "TESTING — UI" list).
+
+### Full regression
+
+`python -m pytest -q` — 1102 passed, 6 skipped, 0 failed excluding `tests/test_captain_bidding_server.py` (196s; that file's 71 tests pass cleanly on their own, 25.11s) — exactly the pre-Milestone-2 1020 baseline plus this milestone's 88 new tests.
+
+## Second Auction — Milestone 3: Captain Phone Bidding + Current Team View + UI Polish — October 2026
+
+**Three additions on top of Milestone 2's bidding engine: second-auction captain phone bidding, a phase-aware "current/final teams" read model, and premium visual polish for the Second Auction LIVE/COMPLETE screens.** No new PIN system, no second server, no first-auction behavior change — the existing `CaptainBiddingServer`/`CaptainAuthService` singleton now routes to whichever auction phase is active.
+
+### SECOND-AUCTION PHONE BIDDING
+
+A real, persisted live-bid concept was added to `SecondAuctionState` (`current_bid`/`leading_team_id`) — this *supersedes* Milestone 2's "no live-bid concept, manual-organizer-only" design note, since phone bidding needs exactly the same attempt-scoped current-bid/leading-team arbitration the first auction already has. `services/second_auction_live_bid_service.py` mirrors `services/live_bid_service.py` exactly (same module-level lock, same validation order) but reuses `services/second_auction_bidding_service.py`'s own `team_can_bid_for_player`/`team_max_legal_bid`/`team_ineligibility_reason` — never a second reserve formula. `AuctionSession.place_second_auction_live_bid()` is the one entry point both a captain's phone and the desktop's own "SOLD uses the leading bid" fallback use. `current_bid`/`leading_team_id` reset to `None` the instant a SOLD/UNSOLD reveals the next second-auction player, exactly mirroring the first auction's own reset rule.
+
+### PIN AUTHENTICATION REUSE
+
+Zero new PIN/auth code. The exact same `CaptainAuthService` instance (PINs, tokens, one-device-per-team enforcement, CONNECTED/AUTHENTICATED heartbeat tracking) that already serves first-auction phone bidding now also serves the second auction — a captain's PIN, login state, and team lock carry over automatically across the phase transition with no re-login required.
+
+### SERVER ROUTING (one server, phase-aware)
+
+`CaptainBiddingServer.build_state()` now dispatches to `_build_second_auction_state()` once `session.second_auction_state.is_initialized` (IN_PROGRESS/COMPLETE/BLOCKED), and to the byte-for-byte-unchanged `_build_first_auction_state()` otherwise — both return the same key *names* (`current_player`/`current_bid`/`leading_team_name`/`own_team`/`authenticated`/`bidding_enabled`/`round_number`/`session_invalid`), with an additive `auction_phase` field ("FIRST_AUCTION"/"SECOND_AUCTION") and a few second-auction-only additions (`current_player.previous_team_name`/`original_first_auction_price`, `own_team.eligible`/`ineligibility_reason`, `progress`). `/api/bid` dispatches the same way: `place_second_auction_live_bid` once the second auction has started, the unchanged `place_live_bid` otherwise. Team identity still comes only from the authenticated token in both branches — never the request body.
+
+### MIXED MODE (unchanged philosophy, now spans both auctions)
+
+0 to 4 captain phones may connect at any time during the second auction, each locked to its own team by PIN; the organizer can always bid manually for any team — connected, recently-active, or never authenticated — from the desktop, and alone finalizes SOLD/UNSOLD. Captain phones have no SOLD/UNSOLD route at all (`/api/sold`/`/api/unsold` do not exist); an organizer SOLD/UNSOLD immediately advances every connected phone's next poll.
+
+### CAPTAIN CONNECTION STATUS (honest, existing-architecture-only)
+
+A permanent "Captain Connections" panel on the Second Auction LIVE screen (never only inside Settings) shows all four teams at once with one of three honest labels derived from `CaptainAuthService.connection_overview()`: **CONNECTED** (heartbeat within the active window), **RECENTLY ACTIVE** (still authenticated, hasn't polled recently — a dimmed phone screen, never requires re-entering a PIN), or **MANUAL / OFFLINE** (never authenticated this session). A "N / 4 CONNECTED" headline counts strictly `connected`. No fabricated live-presence signal was invented — this is exactly `is_authenticated`/`is_connected`'s existing distinction, just surfaced where the organizer can see it during the auction itself. Connection status never gates eligibility or disables manual organizer bidding.
+
+### CURRENT-ROSTER READ MODEL (`services/current_roster_service.py`)
+
+One small, phase-aware read model — `get_current_roster_for_team`/`get_current_team_for_player`/`get_current_team_budget`/`get_current_starting_budget`/`get_second_auction_spent`/`is_player_new_transfer` — chosen entirely by `session.second_auction_state.status`: the first-auction `Team.roster`/`remaining_budget` while `NOT_STARTED`, the second-auction `SecondAuctionState.active_rosters_by_team`/`remaining_budgets_by_team` once started. `Team.roster`/`remaining_budget`/`Player.sold_to`/`sold_price` are never read-modified by anything here — they remain the permanent first-auction historical record forever. `CurrentTeamSummary` (parallel to, but not replacing, `services/team_service.py`'s first-auction-only `TeamSummary`) is what the Teams screen now builds once any session is active.
+
+### TEAMS SCREEN BEHAVIOR
+
+Before the second auction starts, Teams is pixel-for-pixel what it already was (verified: `CurrentTeamSummary` reduces to identical values). Once started, the subtitle banner reads "SECOND AUCTION IN PROGRESS" / "SECOND AUCTION BLOCKED" / "SECOND AUCTION COMPLETE — FINAL SQUADS", the stat row relabels to **First Auction Remaining** (small reference only) / **Second Auction Starting Budget** / **Second Auction Spent** / **Final Remaining Budget** / **Current Squad** — never presenting the old 100M first-auction figure as current spendable funds — and each roster row gets a gold **NEW** badge when `is_player_new_transfer` is true (derived purely from `SecondAuctionState.history`, never a mutated `Player` field). A player who moved teams (e.g. released by Blackout, bought by Darkstar) shows under Darkstar's *current* roster while Blackout's first-auction `Team.roster` and the first auction's own history still show Blackout as the original buyer — both are true, for different questions, and neither is overwritten.
+
+### SECOND AUCTION LIVE — PREMIUM VISUAL HIERARCHY
+
+Visual priority, top to bottom: the current player (bigger photo/name, position badge, previous team + original price shown in muted secondary text so historical context never competes with live numbers) → a dedicated **CURRENT BID / LEADING TEAM** block (large gold/green typography, fed by `SecondAuctionState.current_bid`/`leading_team_id`) → the team-status row (budget/roster/max-bid/eligibility, click-to-select) → the permanent Captain Connections panel → the price-entry/SOLD/UNSOLD controls → the transaction history table. The screen polls every 500ms (mirroring Live Auction's own mechanism) so a phone bid or a connection change appears on the desktop within about a second, without ever touching a Tk widget from the server's own thread.
+
+### SECOND AUCTION COMPLETE — PREMIUM VIEW
+
+Shows "SECOND AUCTION COMPLETE", "N / 16 PLAYERS SOLD", "FINAL SQUADS LOCKED", each team's starting/final-remaining budget and second-window purchase count, and a **VIEW FINAL TEAMS** button that navigates to the Teams screen (`MainWindow.show_screen("Teams")`) — read-only; nothing on this view mutates state.
+
+### FIRST-AUCTION PHONE REGRESSION
+
+`CaptainBiddingServer`'s first-auction code path (`_build_first_auction_state`, the `place_live_bid` branch of `/api/bid`) is untouched byte-for-byte aside from one additive `auction_phase` key — verified directly against the existing `tests/test_captain_bidding_server.py` (71/71 still pass) plus a fresh, independent regression file built specifically for this ticket.
+
+### PERSISTENCE
+
+`SecondAuctionState.current_bid`/`leading_team_id` persist through the existing additive `second_auction_state` snapshot key (no new key, no schema bump). Captain-phone connections/tokens themselves are never persisted (same Phase-1/Phase-2 rule as the first auction) — after a restart the organizer restarts the server and captains simply re-enter their still-valid PINs; the phone API then reflects whatever second-auction player/budgets are currently persisted, with no duplicated transactions.
+
+### TESTS
+
+New: `tests/test_second_auction_phone.py` (38 tests — PHONE AUTH/STATE/BIDS), `tests/test_second_auction_mixed_mode.py` (8 tests), `tests/test_second_auction_connection_status.py` (9 tests), `tests/test_first_auction_phone_regression_m3.py` (6 tests), `tests/test_second_auction_final_team_view.py` (16 tests), `tests/test_second_auction_milestone3_ui.py` (16 tests) — 93 new tests total, numbered to match the ticket's own lists. Existing `tests/test_captain_bidding_server.py`/`tests/test_captain_auth_service.py`/`tests/test_teams_screen.py`/`tests/test_settings_screen.py` re-verified unaffected.
+
+### Full regression
+
+`python -m pytest -q` — 1179 passed, 6 skipped, 0 failed excluding `tests/test_captain_bidding_server.py` and `tests/test_second_auction_milestone3_ui.py` (220s) — exactly the pre-Milestone-3 1108 baseline plus 77 of this milestone's 93 new tests. Both excluded files pass cleanly together on their own (87 passed, 31s). `tests/test_second_auction_milestone3_ui.py` contains one real-socket `uvicorn.Server` test (`test_79`, mirroring `test_captain_bidding_server.py`'s own real-port lifecycle tests) — combined with the dozens of `TestClient` portal threads this ticket's other new test files create across a ~1200-test run, it reproduces the exact same documented class of full-suite-only hang already known from `test_captain_bidding_server.py` (see that file's own `client` fixture docstring). Confirmed directly: the full suite completes cleanly once *both* files are excluded, and each excluded file passes cleanly on its own.
 
 ## Key implementation decisions
 

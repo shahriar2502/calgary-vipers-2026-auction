@@ -37,7 +37,7 @@ from enum import Enum
 from models.auction import Auction, AuctionStatus
 from models.match_result import MatchResult
 from models.player import Player
-from models.second_auction import SecondAuctionSetup
+from models.second_auction import SecondAuctionSetup, SecondAuctionState, SecondAuctionStatus
 from models.team import Team
 from services.auction_service import (
     AuctionTransactionError,
@@ -48,11 +48,14 @@ from services.auction_service import (
     sold_player_ids,
 )
 from services import match_result_service
+from services import second_auction_bidding_service
 from services import second_auction_service
 from services.live_bid_service import BidResult, place_bid
 from services.match_result_service import MatchResultError
 from services.player_service import load_players, load_teams, validate_setup
 from services.randomization_service import create_auction
+from services.second_auction_bidding_service import SecondAuctionBiddingError, SecondAuctionTransactionResult
+from services.second_auction_live_bid_service import SecondAuctionBidResult, place_second_auction_bid
 from services.second_auction_service import SecondAuctionError
 
 
@@ -99,6 +102,12 @@ class AuctionSession:
     # match_results — see services/second_auction_service.py. Only ever
     # meaningful once `auction.status == COMPLETE`.
     second_auction_setup: SecondAuctionSetup = field(default_factory=SecondAuctionSetup)
+
+    # Second Auction — Milestone 2 (October 2026): the bidding engine's
+    # own state, built from `second_auction_setup` only once it is
+    # CONFIRMED — see services/second_auction_bidding_service.py. Never
+    # mutates a Team/Player/first-auction Auction object.
+    second_auction_state: SecondAuctionState = field(default_factory=SecondAuctionState)
 
     # Milestone 9: session identity/metadata, persisted verbatim by
     # services/persistence_service.py — see that module's save-file shape.
@@ -248,6 +257,7 @@ class AuctionSession:
         self.last_result = other.last_result
         self.match_results = other.match_results
         self.second_auction_setup = other.second_auction_setup
+        self.second_auction_state = other.second_auction_state
         self.mode = other.mode
         self.session_id = other.session_id
         self.name = other.name
@@ -373,8 +383,88 @@ class AuctionSession:
 
     def unlock_second_auction_release_plan(self) -> None:
         self._require_completed_auction(SecondAuctionError)
+        # Milestone 2: unlocking a confirmed plan is only ever safe while
+        # the second auction itself has not started yet (nothing
+        # downstream — budgets, rosters, history — has acted on it). Once
+        # `second_auction_state` is initialized, the release plan that
+        # produced its frozen starting budgets must stay locked.
+        if self.second_auction_state.is_initialized:
+            raise SecondAuctionError(
+                "The release plan cannot be edited once the second auction has started."
+            )
         second_auction_service.unlock_release_plan(self.second_auction_setup)
         self._trigger_autosave()
+
+    # ------------------------------------------------------------------
+    # Second Auction — Milestone 2 (October 2026): the bidding engine
+    # itself. Entirely independent of the first-auction transaction
+    # methods above — never mutates a Team/Player/first-auction Auction
+    # object. See services/second_auction_bidding_service.py.
+    # ------------------------------------------------------------------
+
+    def start_second_auction(self, seed: int | None = None) -> None:
+        """Validate every precondition and initialize
+        `second_auction_state` from the confirmed release plan. Raises
+        `SecondAuctionBiddingError` (leaving `second_auction_state` and
+        every `Team`/`Player` object unchanged) if the first auction
+        isn't complete, the release plan isn't confirmed, or the second
+        auction has already been started."""
+        self._require_completed_auction(SecondAuctionBiddingError)
+        players_by_id = {player.id: player for player in self.players}
+        self.second_auction_state = second_auction_bidding_service.initialize_second_auction(
+            first_auction_status=self.auction.status,
+            setup=self.second_auction_setup,
+            current_state=self.second_auction_state,
+            teams=self.teams,
+            players_by_id=players_by_id,
+            match_results=self.match_results,
+            seed=seed,
+        )
+        self._trigger_autosave()
+
+    def sell_second_auction_player(self, winning_team: int | str, sale_price: int) -> SecondAuctionTransactionResult:
+        """Sell the second auction's current player via services.second_
+        auction_bidding_service.process_second_auction_sale."""
+        self._require_completed_auction(SecondAuctionBiddingError)
+        players_by_id = {player.id: player for player in self.players}
+        result = second_auction_bidding_service.process_second_auction_sale(
+            self.second_auction_state, self.second_auction_setup, self.teams, players_by_id, winning_team, sale_price
+        )
+        self._trigger_autosave()
+        return result
+
+    def mark_second_auction_player_unsold(self) -> SecondAuctionTransactionResult:
+        """Mark the second auction's current player UNSOLD via services.
+        second_auction_bidding_service.process_second_auction_unsold."""
+        self._require_completed_auction(SecondAuctionBiddingError)
+        players_by_id = {player.id: player for player in self.players}
+        result = second_auction_bidding_service.process_second_auction_unsold(
+            self.second_auction_state, self.second_auction_setup, self.teams, players_by_id
+        )
+        self._trigger_autosave()
+        return result
+
+    def place_second_auction_live_bid(self, team_id_or_name: int | str, bid_amount: int) -> SecondAuctionBidResult:
+        """Second Auction — Milestone 3: the one entry point both the
+        desktop's own second-auction bid controls and every captain's
+        phone use — see `services/second_auction_live_bid_service.
+        place_second_auction_bid` for the actual validation (team
+        eligibility, second-auction budget reserve, must-exceed-current-
+        bid). This never sells or marks unsold; SOLD/UNSOLD remain
+        organizer-only via `sell_second_auction_player`/
+        `mark_second_auction_player_unsold` above.
+
+        An accepted bid autosaves immediately, same as a second-auction
+        SOLD/UNSOLD transaction — mirrors `place_live_bid`'s identical
+        rationale. A rejected bid never touches the session's save state."""
+        self._require_completed_auction(SecondAuctionBiddingError)
+        players_by_id = {player.id: player for player in self.players}
+        result = place_second_auction_bid(
+            self.second_auction_state, self.teams, players_by_id, team_id_or_name, bid_amount
+        )
+        if result.accepted:
+            self._trigger_autosave()
+        return result
 
     def _trigger_autosave(self) -> None:
         """Attempt to persist via the injected `autosave` hook, if any.

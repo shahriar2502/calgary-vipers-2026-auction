@@ -32,6 +32,14 @@
   }
   .mode-mock { background: var(--surface-alt); color: var(--text-secondary); }
   .mode-live { background: var(--red); color: var(--text-primary); }
+  .phase-second { background: var(--gold); color: var(--background); margin-left: 6px; }
+  .history-row { display: flex; justify-content: space-between; margin: 4px 0; }
+  .history-label { color: var(--text-secondary); font-size: 11px; text-transform: uppercase; }
+  .history-value { font-size: 13px; font-weight: 700; }
+  .ineligible-note {
+    margin-top: 10px; background: var(--surface-alt); color: var(--text-secondary); border-radius: 8px;
+    padding: 8px 10px; font-size: 12px; font-weight: 700; text-align: center;
+  }
   .card {
     background: var(--surface); border-radius: 14px; padding: 16px; margin-bottom: 14px;
     border: 1px solid var(--border);
@@ -153,6 +161,16 @@
           <span><span class="ovr-value" id="player-ovr"></span> <span class="ovr-label">OVR</span></span>
         </div>
         <div class="fpl-line" id="player-fpl"></div>
+        <div id="second-auction-history" hidden>
+          <div class="history-row">
+            <span class="history-label">Previous Team</span>
+            <span class="history-value" id="previous-team-name">—</span>
+          </div>
+          <div class="history-row">
+            <span class="history-label">Original First-Auction Price</span>
+            <span class="history-value" id="original-price">—</span>
+          </div>
+        </div>
       </div>
 
       <div class="card">
@@ -184,6 +202,7 @@
           <button class="bid-button" data-increment="2">+2M</button>
           <button class="bid-button" data-increment="5">+5M</button>
         </div>
+        <div class="ineligible-note" id="ineligible-note" hidden></div>
         <div class="reject-message" id="reject-message"></div>
       </div>
     </div>
@@ -222,10 +241,12 @@
   const biddingContent = document.getElementById("bidding-content");
   const rejectMessage = document.getElementById("reject-message");
 
-  function modeBadgeHtml(mode) {
-    if (mode === "LIVE") return '<span class="mode-badge mode-live">LIVE AUCTION</span>';
-    if (mode === "MOCK") return '<span class="mode-badge mode-mock">MOCK AUCTION</span>';
-    return "";
+  function modeBadgeHtml(mode, phase) {
+    let html = "";
+    if (mode === "LIVE") html += '<span class="mode-badge mode-live">LIVE AUCTION</span>';
+    else if (mode === "MOCK") html += '<span class="mode-badge mode-mock">MOCK AUCTION</span>';
+    if (phase === "SECOND_AUCTION") html += '<span class="mode-badge phase-second">SECOND AUCTION</span>';
+    return html;
   }
 
   function showLoginScreen(message) {
@@ -298,17 +319,19 @@
   }
 
   function renderBiddingState(state) {
-    document.getElementById("mode-badge-bid").innerHTML = modeBadgeHtml(state.session_mode);
+    const isSecondAuction = state.auction_phase === "SECOND_AUCTION";
+    document.getElementById("mode-badge-bid").innerHTML = modeBadgeHtml(state.session_mode, state.auction_phase);
     connectedTeamName.textContent = state.team_name || "";
     connectionPill.textContent = "CONNECTED";
     connectionPill.classList.add("online");
 
+    const auctionLabel = isSecondAuction ? "SECOND AUCTION" : "AUCTION";
     if (state.auction_status === "BLOCKED") {
-      showStatus("AUCTION BLOCKED", "Bidding unavailable.");
+      showStatus(auctionLabel + " BLOCKED", "Bidding unavailable.");
       return;
     }
     if (state.auction_status === "COMPLETE") {
-      showStatus("AUCTION COMPLETE", "Bidding closed.");
+      showStatus(auctionLabel + " COMPLETE", "Bidding closed.");
       return;
     }
     if (!state.current_player) {
@@ -338,17 +361,41 @@
     document.getElementById("base-price").textContent = player.base_price + "M";
     currentBasePrice = player.base_price;
 
+    const historyBlock = document.getElementById("second-auction-history");
+    if (isSecondAuction && player.previous_team_name != null) {
+      historyBlock.hidden = false;
+      document.getElementById("previous-team-name").textContent = player.previous_team_name;
+      document.getElementById("original-price").textContent =
+        player.original_first_auction_price != null ? player.original_first_auction_price + "M" : "—";
+    } else {
+      historyBlock.hidden = true;
+    }
+
     document.getElementById("current-bid").textContent = state.current_bid != null ? state.current_bid + "M" : "—";
     document.getElementById("leading-team").textContent = state.leading_team_name || "—";
 
     const yourTeam = state.own_team;
+    const ineligibleNote = document.getElementById("ineligible-note");
+    let disableBidding = !state.bidding_enabled;
     if (yourTeam) {
       document.getElementById("your-budget").textContent = yourTeam.remaining_budget + "M";
       document.getElementById("your-squad").textContent = yourTeam.roster_size + "/" + yourTeam.max_squad_size;
       document.getElementById("your-max-bid").textContent = yourTeam.maximum_legal_bid + "M";
+      // "eligible"/"ineligibility_reason" are second-auction-only fields
+      // (see services/captain_bidding_server.py) — absent (undefined) for
+      // the first auction, where disableBidding already covers the
+      // "nothing to bid on at all" case with no per-team reason needed.
+      if (yourTeam.eligible === false) {
+        disableBidding = true;
+        ineligibleNote.hidden = false;
+        ineligibleNote.textContent = yourTeam.ineligibility_reason || "Your team cannot bid right now.";
+      } else {
+        ineligibleNote.hidden = true;
+      }
+    } else {
+      ineligibleNote.hidden = true;
     }
 
-    const disableBidding = !state.bidding_enabled;
     document.querySelectorAll(".bid-button").forEach(function (button) {
       button.disabled = disableBidding;
     });
@@ -366,7 +413,7 @@
           return;
         }
         if (!token) {
-          document.getElementById("mode-badge-login").innerHTML = modeBadgeHtml(state.session_mode);
+          document.getElementById("mode-badge-login").innerHTML = modeBadgeHtml(state.session_mode, state.auction_phase);
           return;
         }
         if (!state.authenticated) {

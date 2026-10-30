@@ -14,11 +14,13 @@ import json
 import customtkinter as ctk
 
 from models.player import Player
+from models.second_auction import SecondAuctionStatus
+from services import current_roster_service as crs
 from services.auction_session_service import AuctionSession
 from services.config_service import load_position_colors
-from services.team_service import TeamSummary, build_team_summaries, load_team_summaries
+from services.team_service import load_team_summaries
 from ui import theme
-from ui.widgets import captain_badge, position_badge
+from ui.widgets import captain_badge, position_badge, transfer_badge
 
 TEAMS_PER_ROW = 2
 
@@ -51,7 +53,9 @@ def _build_mini_stat(parent: ctk.CTkBaseClass, label: str, value: str) -> ctk.CT
     return block
 
 
-def _build_roster_row(parent: ctk.CTkBaseClass, player: Player, position_colors: dict[str, str]) -> ctk.CTkFrame:
+def _build_roster_row(
+    parent: ctk.CTkBaseClass, player: Player, position_colors: dict[str, str], is_new_transfer: bool = False
+) -> ctk.CTkFrame:
     row = ctk.CTkFrame(parent, fg_color="transparent")
     row.grid_columnconfigure(0, weight=1)
 
@@ -59,8 +63,17 @@ def _build_roster_row(parent: ctk.CTkBaseClass, player: Player, position_colors:
         row, text=player.full_name, font=theme.body_font(size=13), text_color=theme.TEXT_PRIMARY, anchor="w"
     ).grid(row=0, column=0, sticky="w")
     position_badge(row, player.position, position_colors).grid(row=0, column=1, sticky="e", padx=(8, 4))
+    next_column = 2
     if player.is_captain:
-        captain_badge(row).grid(row=0, column=2, sticky="e")
+        captain_badge(row).grid(row=0, column=next_column, sticky="e")
+        next_column += 1
+    # Second Auction — Milestone 3: a player bought via the second
+    # auction, derived purely from SecondAuctionState.history (see
+    # services/current_roster_service.is_player_new_transfer) — never a
+    # mutated historical field, and never shown for a captain (captains
+    # are never released/purchased in either auction).
+    if is_new_transfer:
+        transfer_badge(row).grid(row=0, column=next_column, sticky="e", padx=(4, 0))
     return row
 
 
@@ -76,7 +89,21 @@ def _build_unresolved_roster_row(parent: ctk.CTkBaseClass, player_id: int) -> ct
     return row
 
 
-def _build_team_card(parent: ctk.CTkBaseClass, summary: TeamSummary, position_colors: dict[str, str]) -> ctk.CTkFrame:
+def _build_team_card(
+    parent: ctk.CTkBaseClass,
+    summary,
+    position_colors: dict[str, str],
+    stats: list[tuple[str, str]],
+    is_new_transfer=lambda player_id: False,
+) -> ctk.CTkFrame:
+    """`summary` may be either `services/team_service.py`'s `TeamSummary`
+    (canonical/first-auction-only, no active session) or `services/
+    current_roster_service.py`'s `CurrentTeamSummary` (phase-aware, once
+    a session is active) — this function only ever touches the handful
+    of fields both share (`team`/`captain`/`roster_players`/
+    `unresolved_roster_ids`), with every phase-specific stat already
+    precomputed into `stats` by the caller (see `TeamsScreen._build_team_
+    grid`), so it never needs to know which summary type it was given."""
     card = ctk.CTkFrame(parent, fg_color=theme.SURFACE, corner_radius=10)
     card.grid_columnconfigure(0, weight=1)
 
@@ -110,13 +137,6 @@ def _build_team_card(parent: ctk.CTkBaseClass, summary: TeamSummary, position_co
 
     stats_row = ctk.CTkFrame(card, fg_color="transparent")
     stats_row.grid(row=2, column=0, sticky="ew", padx=20, pady=(0, 14))
-    stats = [
-        ("Remaining Budget", f"{summary.remaining_budget}M"),
-        ("Starting Budget", f"{summary.team.starting_budget}M"),
-        ("Total Spent", f"{summary.total_spent}M"),
-        ("Squad", f"{summary.squad_size} / {summary.team.max_squad_size}"),
-        ("Remaining Slots", str(summary.remaining_slots)),
-    ]
     for index, (label, value) in enumerate(stats):
         stats_row.grid_columnconfigure(index, weight=1)
         _build_mini_stat(stats_row, label, value).grid(row=0, column=index, sticky="w", padx=(0 if index == 0 else 12, 0))
@@ -138,7 +158,9 @@ def _build_team_card(parent: ctk.CTkBaseClass, summary: TeamSummary, position_co
     roster_container.grid_columnconfigure(0, weight=1)
 
     for index, player in enumerate(summary.roster_players):
-        _build_roster_row(roster_container, player, position_colors).grid(row=index, column=0, sticky="ew", pady=3)
+        _build_roster_row(
+            roster_container, player, position_colors, is_new_transfer=is_new_transfer(player.id)
+        ).grid(row=index, column=0, sticky="ew", pady=3)
 
     offset = len(summary.roster_players)
     for index, unresolved_id in enumerate(summary.unresolved_roster_ids):
@@ -163,10 +185,20 @@ class TeamsScreen(ctk.CTkFrame):
     def __init__(self, parent: ctk.CTkBaseClass, session: AuctionSession | None = None) -> None:
         super().__init__(parent, fg_color=theme.BACKGROUND, corner_radius=0)
         self._session = session
+        # Second Auction — Milestone 3: once a session is active, always
+        # use the phase-aware CurrentTeamSummary (see services/current_
+        # roster_service.py) instead of the first-auction-only
+        # TeamSummary — it already falls back to identical first-auction
+        # values while second_auction_state.status == NOT_STARTED, so
+        # this is a behavior-preserving swap for every phase before the
+        # second auction starts.
+        self._is_second_auction_phase = (
+            session is not None and session.started and crs.second_auction_is_active_or_complete(session)
+        )
 
         try:
             if session is not None and session.started:
-                self._summaries: list[TeamSummary] = build_team_summaries(session.teams, session.players)
+                self._summaries = crs.build_current_team_summaries(session)
             else:
                 self._summaries = load_team_summaries()
             self._position_colors = load_position_colors()
@@ -215,13 +247,28 @@ class TeamsScreen(ctk.CTkFrame):
             text_color=theme.TEXT_PRIMARY,
             anchor="w",
         ).grid(row=0, column=0, sticky="w", padx=32, pady=(28, 4))
+
+        subtitle, subtitle_color = self._title_subtitle()
         ctk.CTkLabel(
             self,
-            text="Captains, budgets, squad capacity, and current rosters for all four auction teams.",
-            font=theme.body_font(size=14),
-            text_color=theme.TEXT_SECONDARY,
+            text=subtitle,
+            font=theme.body_font(size=14, weight="bold" if self._is_second_auction_phase else "normal"),
+            text_color=subtitle_color,
             anchor="w",
         ).grid(row=1, column=0, sticky="w", padx=32, pady=(0, 16))
+
+    def _title_subtitle(self) -> tuple[str, str]:
+        """Second Auction — Milestone 3: makes the current tournament
+        phase unmistakable at a glance, per the ticket's "do NOT show
+        stale first-auction rosters as if they were current" requirement."""
+        if not self._is_second_auction_phase:
+            return "Captains, budgets, squad capacity, and current rosters for all four auction teams.", theme.TEXT_SECONDARY
+        status = self._session.second_auction_state.status
+        if status == SecondAuctionStatus.COMPLETE:
+            return "SECOND AUCTION COMPLETE — FINAL SQUADS", theme.ACCENT_GREEN
+        if status == SecondAuctionStatus.BLOCKED:
+            return "SECOND AUCTION BLOCKED — showing current active rosters", theme.UNSOLD_RED
+        return "SECOND AUCTION IN PROGRESS — showing current active rosters", theme.GOLD_ACCENT
 
     def _build_summary_row(self) -> None:
         summary_row = ctk.CTkFrame(self, fg_color="transparent")
@@ -246,15 +293,44 @@ class TeamsScreen(ctk.CTkFrame):
                 row=0, column=index, sticky="ew", padx=(0 if index == 0 else 8, 0)
             )
 
+    def _stats_for_summary(self, summary) -> list[tuple[str, str]]:
+        if not self._is_second_auction_phase:
+            return [
+                ("Remaining Budget", f"{summary.remaining_budget}M"),
+                ("Starting Budget", f"{summary.team.starting_budget}M"),
+                ("Total Spent", f"{summary.team.starting_budget - summary.remaining_budget}M"),
+                ("Squad", f"{summary.squad_size} / {summary.team.max_squad_size}"),
+                ("Remaining Slots", str(summary.remaining_slots)),
+            ]
+        # Second Auction — Milestone 3: never label the old first-auction
+        # 100M budget as the team's current spendable budget during/after
+        # the second auction — see the ticket's "BUDGET DISPLAY AFTER
+        # SECOND AUCTION" requirement. A small first-auction reference
+        # figure is preserved, clearly labeled, never confused with funds.
+        return [
+            ("First Auction Remaining", f"{summary.first_auction_remaining_budget}M"),
+            ("Second Auction Starting Budget", f"{summary.starting_budget}M"),
+            ("Second Auction Spent", f"{summary.second_auction_spent}M"),
+            ("Final Remaining Budget", f"{summary.remaining_budget}M"),
+            ("Current Squad", f"{summary.squad_size} / {summary.team.max_squad_size}"),
+        ]
+
     def _build_team_grid(self) -> None:
         scroll_area = ctk.CTkScrollableFrame(self, fg_color=theme.BACKGROUND, corner_radius=0)
         scroll_area.grid(row=3, column=0, sticky="nsew", padx=32, pady=(0, 24))
         for column in range(TEAMS_PER_ROW):
             scroll_area.grid_columnconfigure(column, weight=1)
 
+        is_new_transfer = (
+            (lambda player_id: crs.is_player_new_transfer(self._session, player_id))
+            if self._is_second_auction_phase
+            else (lambda player_id: False)
+        )
+
         for index, summary in enumerate(self._summaries):
             row, column = divmod(index, TEAMS_PER_ROW)
-            card = _build_team_card(scroll_area, summary, self._position_colors)
+            stats = self._stats_for_summary(summary)
+            card = _build_team_card(scroll_area, summary, self._position_colors, stats, is_new_transfer)
             card.grid(row=row, column=column, sticky="nsew", padx=8, pady=8)
 
 

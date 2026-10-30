@@ -651,7 +651,11 @@ class SettingsScreen(ctk.CTkFrame):
         else:
             lan_display = _PLACEHOLDER
 
+        second_state = self._session.second_auction_state if self._session is not None else None
+        phase_label = "Second Auction" if second_state is not None and second_state.is_initialized else "First Auction"
+
         info_rows = [
+            ("Auction Phase", phase_label),
             ("Server", state.value),
             ("LAN Address", lan_display),
             ("Authentication", "PIN ENABLED"),

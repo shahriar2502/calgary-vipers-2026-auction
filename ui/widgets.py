@@ -129,6 +129,14 @@ def captain_badge(parent: ctk.CTkBaseClass) -> ctk.CTkLabel:
     return pill_badge(parent, "CAPTAIN", fg_color=theme.ACCENT_GREEN, text_color=theme.BACKGROUND, width=88)
 
 
+def transfer_badge(parent: ctk.CTkBaseClass) -> ctk.CTkLabel:
+    """Second Auction — Milestone 3: marks a player on the Teams screen's
+    current roster who was bought via the second auction (derived from
+    `SecondAuctionState.history` — see services/current_roster_service
+    .is_player_new_transfer — never a stored Player field)."""
+    return pill_badge(parent, "NEW", fg_color=theme.GOLD_ACCENT, text_color=theme.BACKGROUND, width=56)
+
+
 def auction_status_badge(parent: ctk.CTkBaseClass) -> ctk.CTkLabel:
     return pill_badge(parent, "AUCTION", fg_color=theme.SURFACE_ALT, text_color=theme.TEXT_SECONDARY, width=88)
 
